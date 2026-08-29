@@ -1,8 +1,8 @@
 use crate::{
     database::Database,
     models::{
-        Timeline, TimelineCreateInput, TimelineEvent, TimelineEventInput, TimelineSaveInput, Track,
-        TrackInput,
+        Timeline, TimelineCreateInput, TimelineEvent, TimelineEventInput, TimelineSaveInput,
+        TimelineStem, TimelineStemInput, Track, TrackInput,
     },
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -43,6 +43,25 @@ pub fn create(database: &Database, input: TimelineCreateInput) -> Result<Timelin
             params![track.id, input.name, input.bpm],
         )
         .map_err(database_error)?;
+    let timeline_id = transaction.last_insert_rowid();
+    replace_stems(
+        &transaction,
+        timeline_id,
+        &[
+            TimelineStemInput {
+                name: "kick".to_string(),
+                color: "#e94949".to_string(),
+            },
+            TimelineStemInput {
+                name: "snare".to_string(),
+                color: "#4ba7f0".to_string(),
+            },
+            TimelineStemInput {
+                name: "hihat".to_string(),
+                color: "#f5c545".to_string(),
+            },
+        ],
+    )?;
     transaction.commit().map_err(database_error)?;
     get_for_track(database, &track.path)?
         .ok_or_else(|| "A timeline criada não foi encontrada.".to_string())
@@ -62,10 +81,30 @@ pub fn update(
     }
 
     transaction.execute("UPDATE tracks SET name = ?1, duration_seconds = ?2, audio_sha256 = ?3, updated_at = CURRENT_TIMESTAMP WHERE path = ?4", params![input.track.name, input.track.duration_seconds, input.track.audio_sha256, input.track.path]).map_err(database_error)?;
-    transaction.execute("UPDATE timelines SET name = ?1, bpm = ?2, first_beat_seconds = ?3, beat_interval_seconds = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = ?5", params![input.name, input.bpm, input.first_beat_seconds, input.beat_interval_seconds, timeline_id]).map_err(database_error)?;
+    transaction.execute("UPDATE timelines SET name = ?1, bpm = ?2, first_beat_seconds = ?3, beat_interval_seconds = ?4, snap = ?5, follow_playhead = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?7", params![input.name, input.bpm, input.first_beat_seconds, input.beat_interval_seconds, input.snap, input.follow_playhead, timeline_id]).map_err(database_error)?;
+    replace_stems(&transaction, timeline_id, &input.stems)?;
     replace_events(&transaction, timeline_id, &input.events)?;
     transaction.commit().map_err(database_error)?;
     get_by_id(&database.connect()?, timeline_id)
+}
+
+fn replace_stems(
+    transaction: &Transaction,
+    timeline_id: i64,
+    stems: &[TimelineStemInput],
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM timeline_stems WHERE timeline_id = ?1", [timeline_id])
+        .map_err(database_error)?;
+    for stem in stems {
+        transaction
+            .execute(
+                "INSERT INTO timeline_stems (timeline_id, name, color) VALUES (?1, ?2, ?3)",
+                params![timeline_id, stem.name, stem.color],
+            )
+            .map_err(database_error)?;
+    }
+    Ok(())
 }
 
 pub fn delete(database: &Database, timeline_id: i64) -> Result<(), String> {
@@ -117,9 +156,26 @@ fn replace_events(
 }
 
 fn get_by_id(connection: &Connection, timeline_id: i64) -> Result<Timeline, String> {
-    let mut timeline = connection.query_row("SELECT timelines.id, timelines.name, tracks.id, tracks.name, tracks.path, tracks.duration_seconds, tracks.audio_sha256, timelines.bpm, timelines.first_beat_seconds, timelines.beat_interval_seconds FROM timelines INNER JOIN tracks ON tracks.id = timelines.track_id WHERE timelines.id = ?1", [timeline_id], |row| Ok(Timeline { id: row.get(0)?, name: row.get(1)?, track: Track { id: row.get(2)?, name: row.get(3)?, path: row.get(4)?, duration_seconds: row.get(5)?, audio_sha256: row.get(6)? }, bpm: row.get(7)?, first_beat_seconds: row.get(8)?, beat_interval_seconds: row.get(9)?, events: Vec::new() })).map_err(database_error)?;
+    let mut timeline = connection.query_row("SELECT timelines.id, timelines.name, tracks.id, tracks.name, tracks.path, tracks.duration_seconds, tracks.audio_sha256, timelines.bpm, timelines.first_beat_seconds, timelines.beat_interval_seconds, timelines.snap, timelines.follow_playhead FROM timelines INNER JOIN tracks ON tracks.id = timelines.track_id WHERE timelines.id = ?1", [timeline_id], |row| Ok(Timeline { id: row.get(0)?, name: row.get(1)?, track: Track { id: row.get(2)?, name: row.get(3)?, path: row.get(4)?, duration_seconds: row.get(5)?, audio_sha256: row.get(6)? }, bpm: row.get(7)?, first_beat_seconds: row.get(8)?, beat_interval_seconds: row.get(9)?, snap: row.get(10)?, follow_playhead: row.get(11)?, stems: Vec::new(), events: Vec::new() })).map_err(database_error)?;
+    timeline.stems = list_stems(connection, timeline_id)?;
     timeline.events = list_events(connection, timeline_id)?;
     Ok(timeline)
+}
+
+fn list_stems(connection: &Connection, timeline_id: i64) -> Result<Vec<TimelineStem>, String> {
+    let mut statement = connection
+        .prepare("SELECT id, name, color FROM timeline_stems WHERE timeline_id = ?1 ORDER BY id")
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map([timeline_id], |row| {
+            Ok(TimelineStem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+            })
+        })
+        .map_err(database_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
 }
 
 fn list_events(connection: &Connection, timeline_id: i64) -> Result<Vec<TimelineEvent>, String> {
@@ -180,6 +236,14 @@ fn validate_update(input: &TimelineSaveInput) -> Result<(), String> {
             .is_some_and(|value| value <= 0.0)
     {
         return Err("BPM e intervalo entre beats precisam ser maiores que zero.".to_string());
+    }
+    if input.snap.trim().is_empty() {
+        return Err("O snap precisa ser informado.".to_string());
+    }
+    for stem in &input.stems {
+        if stem.name.trim().is_empty() || stem.color.trim().is_empty() {
+            return Err("Os stems precisam de nome e cor.".to_string());
+        }
     }
     for event in &input.events {
         if event.stem.trim().is_empty()

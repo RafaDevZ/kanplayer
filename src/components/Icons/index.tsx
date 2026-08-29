@@ -19,4 +19,5 @@ export const Icons = {
   triangleIcon: (
     <Icon icon="bi:diamond-half" style={{ height: 12, width: 12 }} />
   ),
+  walkArrow: <Icon icon="bi:arrow-bar-right" />,
 };

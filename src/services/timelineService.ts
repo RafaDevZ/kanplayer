@@ -14,6 +14,9 @@ const toTimelineSaveInput = (timeline: TimelineProps) => ({
   bpm: timeline.bpm,
   firstBeatSeconds: timeline.firstBeatSeconds,
   beatIntervalSeconds: timeline.beatIntervalSeconds,
+  snap: timeline.snap,
+  followPlayhead: timeline.followPlayhead,
+  stems: timeline.stems.map(({ name, color }) => ({ name, color })),
   events: timeline.events.map(({ stem, timeSeconds, origin }) => ({
     stem,
     timeSeconds,

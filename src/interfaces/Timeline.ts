@@ -1,6 +1,11 @@
 import z from "zod";
 import { trackSchema, type TrackProps } from "./Track";
 import { timelineEventSchema, type TimelineEventProps } from "./TimelineEvent";
+import {
+  defaultTimelineStems,
+  timelineStemSchema,
+  type TimelineStemProps,
+} from "./TimelineStem";
 
 export interface TimelineProps {
   id: number;
@@ -9,6 +14,9 @@ export interface TimelineProps {
   bpm?: number;
   firstBeatSeconds?: number;
   beatIntervalSeconds?: number;
+  snap: string;
+  followPlayhead: boolean;
+  stems: TimelineStemProps[];
   events: TimelineEventProps[];
 }
 
@@ -31,5 +39,8 @@ export const timelineSchema = z.object({
     .positive()
     .nullish()
     .transform((value) => value ?? undefined),
+  snap: z.string().default("1/16"),
+  followPlayhead: z.boolean().default(false),
+  stems: z.array(timelineStemSchema).default(() => defaultTimelineStems),
   events: z.array(timelineEventSchema).default([]),
 });

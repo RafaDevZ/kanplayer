@@ -1,4 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react-dom";
+import { HexColorPicker } from "react-colorful";
 import * as TE from "./styles";
 import { Icons } from "../../components/Icons";
 import { useTimeline, useUpdateTimeline } from "../../queries/useTimelines";
@@ -10,16 +13,13 @@ import {
   type TimelineEventProps,
 } from "../../interfaces/TimelineEvent";
 import { timelineSchema, type TimelineProps } from "../../interfaces/Timeline";
+import {
+  createTimelineStem,
+  defaultTimelineStems,
+} from "../../interfaces/TimelineStem";
 
-const defaultLayers = ["kick", "snare", "hihat"];
 const beatsPerBar = 4;
 const barBoundaryToleranceSeconds = 0.001;
-
-const layerColors: Record<string, string> = {
-  kick: "var(--red-200)",
-  snare: "var(--blue-200)",
-  hihat: "var(--yellow-200)",
-};
 
 const getNiceInterval = (minimumInterval: number) => {
   if (minimumInterval <= 1) return 1;
@@ -60,7 +60,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const [timeline, setTimeline] = useState<TimelineProps>();
   const [snap, setSnap] = useState<SnapValue>("1/16");
   const [isSnapOpen, setIsSnapOpen] = useState(false);
-  const [playheadSeconds, setPlayheadSeconds] = useState(0);
+  const [isPlayheadFollowEnabled, setIsPlayheadFollowEnabled] = useState(false);
   const [playerDurationSeconds, setPlayerDurationSeconds] = useState(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [visibleBars, setVisibleBars] = useState<number>(4);
@@ -72,9 +72,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   );
   const [pendingEvent, setPendingEvent] = useState<TimelineEventProps>();
   const [selectedEventIds, setSelectedEventIds] = useState<number[]>([]);
-  const [flashingLayers, setFlashingLayers] = useState<Set<string>>(
-    () => new Set(),
-  );
+  const [colorPickerStemName, setColorPickerStemName] = useState<string>();
+  const [editingStem, setEditingStem] = useState<{
+    id: number;
+    name: string;
+  }>();
   const timelineHistoryRef = useRef<{
     past: TimelineProps[];
     future: TimelineProps[];
@@ -87,16 +89,25 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   }>();
   const rulerViewportRef = useRef<HTMLDivElement>(null);
   const eventsViewportRef = useRef<HTMLDivElement>(null);
+  const rulerPlayheadRef = useRef<HTMLDivElement>(null);
+  const eventsPlayheadRef = useRef<HTMLDivElement>(null);
   const layersRef = useRef<HTMLDivElement>(null);
   const draggedEventRef = useRef<TimelineEventProps[]>([]);
   const draggedEventTimesRef = useRef(new Map<number, number>());
   const pendingEventRef = useRef<TimelineEventProps | undefined>(undefined);
   const eventMarkerRefs = useRef(new Map<number, HTMLSpanElement>());
+  const layerPulseRefs = useRef(new Map<string, HTMLDivElement>());
   const selectionStartRef = useRef<
     { clientX: number; clientY: number } | undefined
   >(undefined);
   const dragPointerXRef = useRef(0);
+  const playheadSecondsRef = useRef(0);
+  const playheadFollowEnabledRef = useRef(false);
+  const playheadReferenceXRef = useRef<number | undefined>(undefined);
   const nextLocalEventIdRef = useRef(-1);
+  const nextLocalStemIdRef = useRef(-1000);
+  const copiedEventsRef = useRef<TimelineEventProps[]>([]);
+  const lastPasteStartSecondsRef = useRef<number | undefined>(undefined);
   const previousPlayerTimeRef = useRef<number | undefined>(undefined);
   const flashTimeoutsRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -104,6 +115,14 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const pendingZoomAnchorRef = useRef<{ ratio: number; x: number } | null>(
     null,
   );
+  const { refs: colorPickerRefs, floatingStyles: colorPickerStyles } =
+    useFloating({
+      open: colorPickerStemName !== undefined,
+      placement: "right",
+      strategy: "fixed",
+      middleware: [offset(6), flip(), shift({ padding: 4 })],
+      whileElementsMounted: autoUpdate,
+    });
   const { mutate: saveTimeline, isPending: isSavingTimeline } =
     useUpdateTimeline((updatedTimeline) => {
       setTimeline(updatedTimeline);
@@ -114,15 +133,22 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
 
   useEffect(() => {
     setVisibleBars(4);
-    setPlayheadSeconds(0);
+    playheadSecondsRef.current = 0;
+    setIsPlayheadFollowEnabled(false);
+    playheadFollowEnabledRef.current = false;
+    playheadReferenceXRef.current = undefined;
     setPlayerDurationSeconds(0);
     setRequestedPlayerTime(undefined);
     previousPlayerTimeRef.current = undefined;
     nextLocalEventIdRef.current = -1;
+    nextLocalStemIdRef.current = -1000;
+    copiedEventsRef.current = [];
+    lastPasteStartSecondsRef.current = undefined;
     flashTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
     flashTimeoutsRef.current.clear();
-    setFlashingLayers(new Set());
     setSelectedEventIds([]);
+    setColorPickerStemName(undefined);
+    setEditingStem(undefined);
     timelineHistoryRef.current = { past: [], future: [] };
     setTimeline(undefined);
   }, [trackPath]);
@@ -130,15 +156,39 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   useEffect(() => {
     if (!savedTimeline) return;
     setTimeline(savedTimeline);
+    setSnap(
+      snapOptions.includes(savedTimeline.snap as SnapValue)
+        ? (savedTimeline.snap as SnapValue)
+        : "1/16",
+    );
+    setIsPlayheadFollowEnabled(savedTimeline.followPlayhead);
+    playheadFollowEnabledRef.current = savedTimeline.followPlayhead;
+    playheadReferenceXRef.current = undefined;
     setSelectedEventIds([]);
+    setColorPickerStemName(undefined);
+    setEditingStem(undefined);
     timelineHistoryRef.current = { past: [], future: [] };
+    copiedEventsRef.current = [];
+    lastPasteStartSecondsRef.current = undefined;
     nextLocalEventIdRef.current =
       Math.min(0, ...savedTimeline.events.map((event) => event.id)) - 1;
+    nextLocalStemIdRef.current =
+      Math.min(0, ...savedTimeline.stems.map((stem) => stem.id)) - 1;
   }, [savedTimeline?.id]);
   const events = timeline?.events ?? [];
+  const stems = timeline?.stems ?? defaultTimelineStems;
+  const stemColors = new Map(stems.map((stem) => [stem.name, stem.color]));
+  const eventsByTime = useMemo(
+    () =>
+      [...events].sort(
+        (first, second) => first.timeSeconds - second.timeSeconds,
+      ),
+    [events],
+  );
   const layers = [
-    ...new Set([...defaultLayers, ...events.map((event) => event.stem)]),
+    ...new Set([...stems.map((stem) => stem.name), ...events.map((event) => event.stem)]),
   ];
+  const selectedStem = stems.find((stem) => stem.name === colorPickerStemName);
   const beatSeconds =
     timeline?.beatIntervalSeconds ?? (timeline?.bpm ? 60 / timeline.bpm : 0.5);
   const currentBpm = 60 / beatSeconds;
@@ -198,27 +248,73 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       ? subdivisionPixels
       : undefined;
   const labelInterval = getNiceInterval(36 / pixelsPerBar);
-  const playheadPercent =
-    (Math.max(0, Math.min(playheadSeconds, timelineSeconds)) /
-      timelineSeconds) *
-    100;
   const rulerLabels = Array.from({ length: timelineBars }, (_, index) => ({
     bar: index + 1,
     position: (index / timelineBars) * 100,
   })).filter(({ bar }) => bar === 1 || bar % labelInterval === 0);
-  const renderTimelineGrid = () => (
-    <TE.TimelineGrid>
-      {Array.from({ length: timelineBars }, (_, barIndex) => (
-        <TE.TimelineGridBar
-          key={barIndex}
-          $left={barIndex * pixelsPerBar}
-          $width={pixelsPerBar}
-          $showBarLine={barIndex % barGridInterval === 0}
-          $subdivisionPixels={subdivisionGridPixels}
-        />
-      ))}
-    </TE.TimelineGrid>
+  const timelineGrid = useMemo(
+    () => (
+      <TE.TimelineGrid>
+        {Array.from({ length: timelineBars }, (_, barIndex) => (
+          <TE.TimelineGridBar
+            key={barIndex}
+            $left={barIndex * pixelsPerBar}
+            $width={pixelsPerBar}
+            $showBarLine={barIndex % barGridInterval === 0}
+            $subdivisionPixels={subdivisionGridPixels}
+          />
+        ))}
+      </TE.TimelineGrid>
+    ),
+    [barGridInterval, pixelsPerBar, subdivisionGridPixels, timelineBars],
   );
+
+  const getPlayheadCanvasPosition = (timeSeconds: number) =>
+    (Math.max(0, Math.min(timeSeconds, timelineSeconds)) / timelineSeconds) *
+    timelineContentWidth;
+
+  const updatePlayheadVisual = (timeSeconds: number) => {
+    const clampedTime = Math.max(0, Math.min(timeSeconds, timelineSeconds));
+    const canvasPosition = getPlayheadCanvasPosition(clampedTime);
+    const viewport = eventsViewportRef.current;
+    let nextScrollLeft: number | undefined;
+
+    if (
+      playheadFollowEnabledRef.current &&
+      viewport &&
+      playheadReferenceXRef.current !== undefined
+    ) {
+      const maxScrollLeft = Math.max(
+        0,
+        timelineContentWidth - viewport.clientWidth,
+      );
+      nextScrollLeft = Math.max(
+        0,
+        Math.min(canvasPosition - playheadReferenceXRef.current, maxScrollLeft),
+      );
+    }
+
+    playheadSecondsRef.current = clampedTime;
+    const transform = `translate3d(${canvasPosition}px, 0, 0)`;
+    if (rulerPlayheadRef.current) {
+      rulerPlayheadRef.current.style.transform = transform;
+    }
+    if (eventsPlayheadRef.current) {
+      eventsPlayheadRef.current.style.transform = transform;
+    }
+
+    if (viewport && nextScrollLeft !== undefined) {
+      if (Math.abs(viewport.scrollLeft - nextScrollLeft) > 0.001) {
+        viewport.scrollLeft = nextScrollLeft;
+      }
+      if (
+        rulerViewportRef.current &&
+        Math.abs(rulerViewportRef.current.scrollLeft - nextScrollLeft) > 0.001
+      ) {
+        rulerViewportRef.current.scrollLeft = nextScrollLeft;
+      }
+    }
+  };
 
   const updatePlayhead = (clientX: number) => {
     const viewport = eventsViewportRef.current;
@@ -236,7 +332,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       (position / viewport.scrollWidth) * timelineSeconds,
       editableDurationSeconds,
     );
-    setPlayheadSeconds(nextTime);
+    updatePlayheadVisual(nextTime);
     setRequestedPlayerTime(nextTime);
   };
 
@@ -284,7 +380,13 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
 
   const handleSave = () => {
     if (!timeline || isSavingTimeline) return;
-    saveTimeline(timeline);
+    saveTimeline(
+      timelineSchema.parse({
+        ...timeline,
+        snap,
+        followPlayhead: isPlayheadFollowEnabled,
+      }),
+    );
   };
 
   const saveTimelineEvent = (timelineEvent: TimelineEventProps) => {
@@ -543,6 +645,189 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     );
   };
 
+  const updateStemColor = (stemName: string, color: string) => {
+    if (!timeline) return;
+    setTimeline(
+      timelineSchema.parse({
+        ...timeline,
+        stems: timeline.stems.map((stem) =>
+          stem.name === stemName ? { ...stem, color } : stem,
+        ),
+      }),
+    );
+  };
+
+  const renameStem = (stemId: number, nextName: string) => {
+    if (!timeline) return;
+    const stem = timeline.stems.find((timelineStem) => timelineStem.id === stemId);
+    if (!stem) return;
+
+    const name = nextName.trim();
+    setEditingStem(undefined);
+    if (!name || name === stem.name) return;
+    if (
+      timeline.stems.some(
+        (timelineStem) =>
+          timelineStem.id !== stemId &&
+          timelineStem.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+      )
+    )
+      return;
+
+    commitTimelineChange(
+      timelineSchema.parse({
+        ...timeline,
+        stems: timeline.stems.map((timelineStem) =>
+          timelineStem.id === stemId
+            ? { ...timelineStem, name }
+            : timelineStem,
+        ),
+        events: timeline.events.map((timelineEvent) =>
+          timelineEvent.stem === stem.name
+            ? { ...timelineEvent, stem: name }
+            : timelineEvent,
+        ),
+      }),
+    );
+  };
+
+  const addStem = () => {
+    if (!timeline) return;
+    let stemNumber = timeline.stems.length + 1;
+    let name = `Stem ${stemNumber}`;
+    const existingNames = new Set(
+      timeline.stems.map((stem) => stem.name.toLocaleLowerCase()),
+    );
+    while (existingNames.has(name.toLocaleLowerCase())) {
+      stemNumber += 1;
+      name = `Stem ${stemNumber}`;
+    }
+
+    const newStem = {
+      ...createTimelineStem(name, timeline.stems),
+      id: nextLocalStemIdRef.current,
+    };
+    nextLocalStemIdRef.current -= 1;
+    commitTimelineChange(
+      timelineSchema.parse({
+        ...timeline,
+        stems: [...timeline.stems, newStem],
+      }),
+    );
+  };
+
+  useEffect(() => {
+    if (!colorPickerStemName) return;
+    const closeColorPicker = (event: PointerEvent) => {
+      const target = event.target as Node;
+      const reference = colorPickerRefs.reference.current;
+      if (
+        (reference instanceof Element && reference.contains(target)) ||
+        colorPickerRefs.floating.current?.contains(target)
+      )
+        return;
+      setColorPickerStemName(undefined);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setColorPickerStemName(undefined);
+    };
+    document.addEventListener("pointerdown", closeColorPicker);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeColorPicker);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [
+    colorPickerRefs.floating,
+    colorPickerRefs.reference,
+    colorPickerStemName,
+  ]);
+
+  const copySelectedEvents = () => {
+    if (!timeline || selectedEventIds.length === 0) return false;
+    const selectedEvents = timeline.events.filter((timelineEvent) =>
+      selectedEventIds.includes(timelineEvent.id),
+    );
+    if (selectedEvents.length === 0) return false;
+    copiedEventsRef.current = selectedEvents.map((timelineEvent) => ({
+      ...timelineEvent,
+    }));
+    lastPasteStartSecondsRef.current = undefined;
+    return true;
+  };
+
+  const pasteCopiedEvents = () => {
+    if (!timeline || copiedEventsRef.current.length === 0) return false;
+
+    const copiedEvents = copiedEventsRef.current;
+    const copiedStartSeconds = Math.min(
+      ...copiedEvents.map((timelineEvent) => timelineEvent.timeSeconds),
+    );
+    const copiedEndSeconds = Math.max(
+      ...copiedEvents.map((timelineEvent) => timelineEvent.timeSeconds),
+    );
+    const copiedSpanSeconds = copiedEndSeconds - copiedStartSeconds;
+    const maximumStartSeconds = Math.max(
+      0,
+      editableDurationSeconds - copiedSpanSeconds,
+    );
+    const pasteStepSeconds = snapSeconds || beatSeconds;
+    const requestedStartSeconds =
+      (lastPasteStartSecondsRef.current ?? copiedStartSeconds) +
+      pasteStepSeconds;
+    if (requestedStartSeconds > maximumStartSeconds) return false;
+    const existingPositions = new Set(
+      timeline.events.map(
+        (timelineEvent) =>
+          `${timelineEvent.stem}:${timelineEvent.timeSeconds.toFixed(6)}`,
+      ),
+    );
+    const hasCollisionAt = (startSeconds: number) =>
+      copiedEvents.some((timelineEvent) => {
+        const timeSeconds = Number(
+          (startSeconds + timelineEvent.timeSeconds - copiedStartSeconds).toFixed(
+            6,
+          ),
+        );
+        return existingPositions.has(`${timelineEvent.stem}:${timeSeconds.toFixed(6)}`);
+      });
+
+    let pasteStartSeconds = requestedStartSeconds;
+    while (
+      pasteStartSeconds <= maximumStartSeconds &&
+      hasCollisionAt(pasteStartSeconds)
+    ) {
+      pasteStartSeconds += pasteStepSeconds;
+    }
+    if (pasteStartSeconds > maximumStartSeconds) return false;
+
+    const pastedEvents = copiedEvents.map((timelineEvent) => {
+      const pastedEvent = timelineEventSchema.parse({
+        ...timelineEvent,
+        id: nextLocalEventIdRef.current,
+        timeSeconds: Number(
+          (
+            pasteStartSeconds +
+            timelineEvent.timeSeconds -
+            copiedStartSeconds
+          ).toFixed(6),
+        ),
+      });
+      nextLocalEventIdRef.current -= 1;
+      return pastedEvent;
+    });
+
+    commitTimelineChange(
+      timelineSchema.parse({
+        ...timeline,
+        events: [...timeline.events, ...pastedEvents],
+      }),
+    );
+    lastPasteStartSecondsRef.current = pasteStartSeconds;
+    setSelectedEventIds(pastedEvents.map((timelineEvent) => timelineEvent.id));
+    return true;
+  };
+
   useEffect(() => {
     if (selectedEventIds.length === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -580,6 +865,14 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         return;
 
       const key = event.key.toLowerCase();
+      if (key === "c" && !event.shiftKey) {
+        if (copySelectedEvents()) event.preventDefault();
+        return;
+      }
+      if (key === "v" && !event.shiftKey) {
+        if (pasteCopiedEvents()) event.preventDefault();
+        return;
+      }
       const direction =
         key === "y" || (key === "z" && event.shiftKey)
           ? "redo"
@@ -591,7 +884,13 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [timeline]);
+  }, [
+    beatSeconds,
+    editableDurationSeconds,
+    selectedEventIds,
+    snapSeconds,
+    timeline,
+  ]);
 
   useLayoutEffect(() => {
     const viewport = eventsViewportRef.current;
@@ -686,11 +985,47 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     pendingZoomAnchorRef.current = null;
   }, [visibleBars]);
 
+  useLayoutEffect(() => {
+    updatePlayheadVisual(playheadSecondsRef.current);
+  }, [timelineContentWidth, timelineSeconds]);
+
+  useLayoutEffect(() => {
+    if (
+      !isPlayheadFollowEnabled ||
+      playheadReferenceXRef.current !== undefined
+    )
+      return;
+    const viewport = eventsViewportRef.current;
+    if (!viewport) return;
+    playheadReferenceXRef.current = Math.max(
+      0,
+      Math.min(
+        getPlayheadCanvasPosition(playheadSecondsRef.current) -
+          viewport.scrollLeft,
+        viewport.clientWidth,
+      ),
+    );
+    updatePlayheadVisual(playheadSecondsRef.current);
+  }, [
+    isPlayheadFollowEnabled,
+    timeline?.id,
+    timelineContentWidth,
+    timelineSeconds,
+  ]);
+
   const syncTimelineScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    if (rulerViewportRef.current) {
+    if (
+      rulerViewportRef.current &&
+      Math.abs(
+        rulerViewportRef.current.scrollLeft - event.currentTarget.scrollLeft,
+      ) > 0.001
+    ) {
       rulerViewportRef.current.scrollLeft = event.currentTarget.scrollLeft;
     }
-    if (layersRef.current) {
+    if (
+      layersRef.current &&
+      layersRef.current.scrollTop !== event.currentTarget.scrollTop
+    ) {
       layersRef.current.scrollTop = event.currentTarget.scrollTop;
     }
   };
@@ -701,37 +1036,64 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     }
   };
 
+  const togglePlayheadFollow = () => {
+    if (isPlayheadFollowEnabled) {
+      playheadFollowEnabledRef.current = false;
+      playheadReferenceXRef.current = undefined;
+      setIsPlayheadFollowEnabled(false);
+      return;
+    }
+
+    const viewport = eventsViewportRef.current;
+    if (!viewport) return;
+    playheadReferenceXRef.current = Math.max(
+      0,
+      Math.min(
+        getPlayheadCanvasPosition(playheadSecondsRef.current) -
+          viewport.scrollLeft,
+        viewport.clientWidth,
+      ),
+    );
+    playheadFollowEnabledRef.current = true;
+    setIsPlayheadFollowEnabled(true);
+  };
+
   const syncPlayheadWithPlayer = (currentTime: number) => {
     const previousTime = previousPlayerTimeRef.current;
     const timeDelta =
       previousTime === undefined ? 0 : currentTime - previousTime;
 
     if (previousTime !== undefined && timeDelta > 0 && timeDelta <= 1.5) {
-      const passedLayers = new Set(
-        events
-          .filter(
-            (event) =>
-              event.timeSeconds > previousTime &&
-              event.timeSeconds <= currentTime,
-          )
-          .map((event) => event.stem),
-      );
+      let lowerBound = 0;
+      let upperBound = eventsByTime.length;
+      while (lowerBound < upperBound) {
+        const middle = Math.floor((lowerBound + upperBound) / 2);
+        if (eventsByTime[middle].timeSeconds <= previousTime) {
+          lowerBound = middle + 1;
+        } else {
+          upperBound = middle;
+        }
+      }
+
+      const passedLayers = new Set<string>();
+      for (
+        let eventIndex = lowerBound;
+        eventIndex < eventsByTime.length &&
+        eventsByTime[eventIndex].timeSeconds <= currentTime;
+        eventIndex += 1
+      ) {
+        passedLayers.add(eventsByTime[eventIndex].stem);
+      }
 
       passedLayers.forEach((layer) => {
-        setFlashingLayers((current) => {
-          const next = new Set(current);
-          next.add(layer);
-          return next;
-        });
+        const pulse = layerPulseRefs.current.get(layer);
+        if (pulse) pulse.style.opacity = "1";
 
         const previousTimeout = flashTimeoutsRef.current.get(layer);
         if (previousTimeout) clearTimeout(previousTimeout);
         const timeout = setTimeout(() => {
-          setFlashingLayers((current) => {
-            const next = new Set(current);
-            next.delete(layer);
-            return next;
-          });
+          const currentPulse = layerPulseRefs.current.get(layer);
+          if (currentPulse) currentPulse.style.opacity = "0";
           flashTimeoutsRef.current.delete(layer);
         }, 120);
         flashTimeoutsRef.current.set(layer, timeout);
@@ -739,7 +1101,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     }
 
     previousPlayerTimeRef.current = currentTime;
-    if (!isDraggingPlayhead) setPlayheadSeconds(currentTime);
+    updatePlayheadVisual(currentTime);
   };
 
   useEffect(
@@ -793,6 +1155,24 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
           </TE.CenterPlayer>
           <TE.CenterBottom>
             <TE.TimelineHeader>
+              <TE.WalkToggle
+                type="button"
+                $active={isPlayheadFollowEnabled}
+                title="Acompanhar playhead"
+                aria-label="Acompanhar playhead"
+                aria-pressed={isPlayheadFollowEnabled}
+                onClick={togglePlayheadFollow}
+              >
+                {Icons.walkArrow}
+              </TE.WalkToggle>
+              <TE.AddStemButton
+                type="button"
+                title="Adicionar stem"
+                aria-label="Adicionar stem"
+                onClick={addStem}
+              >
+                {Icons.addIcon}
+              </TE.AddStemButton>
               <TE.TimelineHeaderSpacer />
               <TE.SnapControl>
                 <Dropdown
@@ -827,8 +1207,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                     onPointerDown={startPlayheadDrag}
                     onWheel={handleZoom}
                   >
-                    {renderTimelineGrid()}
-                    <TE.RulerPlayhead $position={playheadPercent}>
+                    {timelineGrid}
+                    <TE.RulerPlayhead ref={rulerPlayheadRef}>
                       {Icons.triangleIcon}
                     </TE.RulerPlayhead>
                     {rulerLabels.map((tick) => (
@@ -841,12 +1221,73 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
               </TE.TimelineRuler>
               <TE.TimelineTracks>
                 <TE.Layers ref={layersRef} onScroll={syncLayersScroll}>
-                  {layers.map((layer) => (
-                    <TE.Layer key={layer}>
-                      {layer}
-                      <TE.LayerPulse
-                        $active={flashingLayers.has(layer)}
-                        $color={layerColors[layer] ?? "var(--green-200)"}
+                    {layers.map((layer) => (
+                      <TE.Layer key={layer}>
+                        {stems.find((stem) => stem.name === layer) ? (
+                          <TE.LayerNameInput
+                            value={
+                              editingStem?.id ===
+                              stems.find((stem) => stem.name === layer)?.id
+                                ? editingStem?.name
+                                : layer
+                            }
+                            aria-label={`Nome do stem ${layer}`}
+                            onFocus={() => {
+                              const stem = stems.find(
+                                (timelineStem) => timelineStem.name === layer,
+                              );
+                              if (stem) {
+                                setEditingStem({ id: stem.id, name: stem.name });
+                              }
+                            }}
+                            onChange={(event) => {
+                              const stem = stems.find(
+                                (timelineStem) => timelineStem.name === layer,
+                              );
+                              if (stem) {
+                                setEditingStem({ id: stem.id, name: event.target.value });
+                              }
+                            }}
+                            onBlur={(event) => {
+                              const stem = stems.find(
+                                (timelineStem) => timelineStem.name === layer,
+                              );
+                              if (stem) renameStem(stem.id, event.target.value);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.currentTarget.blur();
+                              }
+                              if (event.key === "Escape") {
+                                setEditingStem(undefined);
+                                event.currentTarget.blur();
+                              }
+                            }}
+                          />
+                        ) : (
+                          layer
+                        )}
+                        {stemColors.has(layer) && (
+                          <TE.StemColorButton
+                            type="button"
+                            $color={stemColors.get(layer) ?? "var(--green-200)"}
+                            aria-label={`Alterar cor do stem ${layer}`}
+                            title="Alterar cor"
+                            onClick={(event) => {
+                              colorPickerRefs.setReference(event.currentTarget);
+                              setColorPickerStemName(layer);
+                            }}
+                          />
+                        )}
+                        <TE.LayerPulse
+                        ref={(element) => {
+                          if (element) {
+                            layerPulseRefs.current.set(layer, element);
+                          } else {
+                            layerPulseRefs.current.delete(layer);
+                          }
+                        }}
+                        $color={stemColors.get(layer) ?? "var(--green-200)"}
                       />
                     </TE.Layer>
                   ))}
@@ -857,7 +1298,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                   onScroll={syncTimelineScroll}
                 >
                   <TE.EventsCanvas $contentWidth={timelineContentWidth}>
-                    {renderTimelineGrid()}
+                    {timelineGrid}
+                    <TE.EventsPlayhead
+                      ref={eventsPlayheadRef}
+                      $height={layers.length * 48}
+                    />
                     {selectionBox && (
                       <TE.SelectionBox
                         $left={Math.min(
@@ -879,7 +1324,6 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                     {layers.map((layer) => (
                       <TE.EventLane
                         key={layer}
-                        $playheadPercent={playheadPercent}
                         onPointerDown={(event) => {
                           if (event.ctrlKey) startSelection(event);
                           else startEventCreation(event, layer);
@@ -899,7 +1343,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                       >
                         {pendingEvent?.stem === layer && (
                           <TE.EventMarker
-                            $color={layerColors[layer] ?? "var(--green-200)"}
+                            $color={stemColors.get(layer) ?? "var(--green-200)"}
                             $isPending
                             style={{
                               left: `${(pendingEvent.timeSeconds / timelineSeconds) * 100}%`,
@@ -921,7 +1365,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                                   eventMarkerRefs.current.delete(event.id);
                                 }
                               }}
-                              $color={layerColors[layer] ?? "var(--green-200)"}
+                              $color={stemColors.get(layer) ?? "var(--green-200)"}
                               $isSelected={selectedEventIds.includes(event.id)}
                               onPointerDown={(pointerEvent) =>
                                 startEventDrag(pointerEvent, event)
@@ -950,10 +1394,27 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                       </TE.EventLane>
                     ))}
                   </TE.EventsCanvas>
-                </TE.EventsViewport>
-              </TE.TimelineTracks>
-            </TE.Timeline>
-          </TE.CenterBottom>
+                  </TE.EventsViewport>
+                </TE.TimelineTracks>
+              </TE.Timeline>
+              {selectedStem &&
+                createPortal(
+                  <TE.StemColorPopover
+                    ref={colorPickerRefs.setFloating}
+                    style={colorPickerStyles}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <HexColorPicker
+                      color={selectedStem.color}
+                      onChange={(color) =>
+                        updateStemColor(selectedStem.name, color)
+                      }
+                    />
+                    <TE.StemColorValue>{selectedStem.color}</TE.StemColorValue>
+                  </TE.StemColorPopover>,
+                  document.body,
+                )}
+            </TE.CenterBottom>
         </TE.CenterPanel>
         <TE.RightPanel />
       </TE.Container>

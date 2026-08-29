@@ -151,6 +151,53 @@ export const BpmDisplay = styled.span`
   white-space: nowrap;
 `;
 
+export const WalkToggle = styled.button<{ $active: boolean }>`
+  height: 24px;
+  width: 24px;
+  margin-left: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  box-sizing: border-box;
+  cursor: pointer;
+  color: var(--white);
+  background-color: ${({ $active }) =>
+    $active ? "var(--blue-100)" : "var(--black-400)"};
+
+  svg {
+    height: 16px;
+    width: 16px;
+  }
+`;
+
+export const AddStemButton = styled.button`
+  height: 24px;
+  width: 24px;
+  margin-left: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  box-sizing: border-box;
+  cursor: pointer;
+  color: var(--white);
+  background-color: var(--black-400);
+
+  &:hover {
+    background-color: var(--black-300);
+  }
+
+  svg {
+    height: 16px;
+    width: 16px;
+  }
+`;
+
 export const BPMDiv = styled.div``;
 
 export const Timeline = styled.div`
@@ -193,7 +240,7 @@ export const RulerTrack = styled.div<{
   cursor: pointer;
   overflow: hidden;
   border-radius: 0 4px 0 0;
-  background-color: #363636;
+  background-color: var(--black-100);
 `;
 
 export const TimelineGrid = styled.div`
@@ -249,13 +296,15 @@ export const TimelineGridBar = styled.div<{
   }
 `;
 
-export const RulerPlayhead = styled.div<{ $position: number }>`
+export const RulerPlayhead = styled.div`
   position: absolute;
   bottom: 3px;
-  left: calc(${({ $position }) => $position}% + 2px);
+  left: 2px;
   width: 5px;
   cursor: pointer;
   z-index: 1;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 
   svg {
     position: absolute;
@@ -299,8 +348,14 @@ export const Layers = styled.div`
   min-width: 130px;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
   overflow-y: auto;
   background-color: var(--black-200);
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 `;
 
 export const Layer = styled.div`
@@ -330,10 +385,20 @@ export const Layer = styled.div`
   }
 `;
 
-export const LayerPulse = styled.div<{
-  $color: string;
-  $active: boolean;
-}>`
+export const LayerNameInput = styled.input`
+  width: 100%;
+  min-width: 0;
+  padding: 0 20px 0 0;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+`;
+
+export const LayerPulse = styled.div<{ $color: string }>`
   position: absolute;
   top: 50%;
   right: 0;
@@ -341,18 +406,77 @@ export const LayerPulse = styled.div<{
   height: 100%;
   transform: translateY(-50%);
   background-color: ${({ $color }) => $color};
-  opacity: ${({ $active }) => ($active ? 1 : 0)};
+  opacity: 0;
   pointer-events: none;
   transition: opacity 70ms ease-out;
+`;
+
+export const StemColorButton = styled.button<{ $color: string }>`
+  position: absolute;
+  right: 12px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--black-400);
+  border-radius: 50%;
+  box-sizing: border-box;
+  background-color: ${({ $color }) => $color};
+  cursor: pointer;
+
+  &:hover {
+    scale: 1.15;
+  }
+`;
+
+export const StemColorPopover = styled.div`
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--black-400);
+  border-radius: 4px;
+  box-sizing: border-box;
+  background-color: var(--black-200);
+  box-shadow: var(--box-shadow);
+
+  .react-colorful {
+    width: 180px;
+    height: 140px;
+  }
+
+  .react-colorful__saturation {
+    border-radius: 3px 3px 0 0;
+  }
+
+  .react-colorful__hue,
+  .react-colorful__alpha {
+    margin-top: 6px;
+    border-radius: 3px;
+  }
+`;
+
+export const StemColorValue = styled.span`
+  color: var(--white);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  text-transform: uppercase;
 `;
 
 export const EventsViewport = styled.div`
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   background-color: var(--black-200);
   ${DftScrollX}
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 `;
 
 export const EventsCanvas = styled.div<{ $contentWidth: number }>`
@@ -384,9 +508,20 @@ export const SelectionBox = styled.div<{
   z-index: 2;
 `;
 
-export const EventLane = styled.div<{
-  $playheadPercent: number;
-}>`
+export const EventsPlayhead = styled.div<{ $height: number }>`
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 1px;
+  height: ${({ $height }) => $height}px;
+  background-color: var(--blue-100);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  z-index: 1;
+`;
+
+export const EventLane = styled.div`
   height: 48px;
   min-height: 48px;
   width: 100%;
@@ -397,18 +532,6 @@ export const EventLane = styled.div<{
   cursor: crosshair;
   background-color: transparent;
   z-index: 1;
-
-  &::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: calc(${({ $playheadPercent }) => $playheadPercent}% - 1px);
-    width: 1px;
-    background-color: var(--blue-100);
-    pointer-events: none;
-    z-index: 1;
-  }
 
   &::after {
     content: "";

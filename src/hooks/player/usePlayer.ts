@@ -187,6 +187,11 @@ export function usePlayer(
         updatePlaybackAnchor(audio.currentTime);
         updateTimelineVisual(audio.currentTime, audio.duration);
       },
+      onRateChange: (event: ChangeEvent<HTMLAudioElement>) => {
+        const audio = event.currentTarget;
+        updatePlaybackAnchor(audio.currentTime);
+        updateTimelineVisual(audio.currentTime, audio.duration);
+      },
       onPlay: () => {
         if (audioRef.current) {
           updatePlaybackAnchor(audioRef.current.currentTime);
@@ -198,6 +203,13 @@ export function usePlayer(
         setIsPlaying(true);
       },
       onPause: () => {
+        if (audioRef.current) {
+          updatePlaybackAnchor(audioRef.current.currentTime);
+          updateTimelineVisual(
+            audioRef.current.currentTime,
+            audioRef.current.duration,
+          );
+        }
         setIsPlaying(false);
       },
       onEnded: () => {

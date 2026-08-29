@@ -57,12 +57,30 @@ pub struct TimelineEvent {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TimelineStemInput {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineStem {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TimelineSaveInput {
     pub name: String,
     pub track: TrackInput,
     pub bpm: Option<f64>,
     pub first_beat_seconds: Option<f64>,
     pub beat_interval_seconds: Option<f64>,
+    pub snap: String,
+    pub follow_playhead: bool,
+    pub stems: Vec<TimelineStemInput>,
     pub events: Vec<TimelineEventInput>,
 }
 
@@ -86,5 +104,8 @@ pub struct Timeline {
     pub first_beat_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beat_interval_seconds: Option<f64>,
+    pub snap: String,
+    pub follow_playhead: bool,
+    pub stems: Vec<TimelineStem>,
     pub events: Vec<TimelineEvent>,
 }
