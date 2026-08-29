@@ -1,0 +1,28 @@
+mod commands;
+mod database;
+mod models;
+mod services;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let database =
+                database::Database::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            app.manage(database);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::list_downloads_audio,
+            commands::import_audio_file,
+            commands::get_timeline_for_track,
+            commands::list_timelines,
+            commands::create_timeline,
+            commands::update_timeline,
+            commands::delete_timeline,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
