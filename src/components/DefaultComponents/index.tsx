@@ -233,6 +233,146 @@ export const TitledInput = React.forwardRef<HTMLInputElement, TitledInputProps>(
   },
 );
 
+function buildMasked(raw: string, mask: string) {
+  let rawIndex = 0;
+
+  return mask
+    .split("")
+    .map((maskCharacter) => {
+      if (["*", "#", "&"].includes(maskCharacter)) {
+        const character = raw[rawIndex++];
+        return character ?? "_";
+      }
+      return maskCharacter;
+    })
+    .join("");
+}
+
+function getRawIndexFromMaskedPosition(mask: string, position: number) {
+  return mask.slice(0, position).replace(/[^*#&]/g, "").length;
+}
+
+function getMaskedPositionFromRawIndex(mask: string, rawIndex: number) {
+  let currentRawIndex = 0;
+  for (let index = 0; index < mask.length; index += 1) {
+    if (!["*", "#", "&"].includes(mask[index])) continue;
+    if (currentRawIndex === rawIndex) return index;
+    currentRawIndex += 1;
+  }
+  return mask.length;
+}
+
+export interface MaskedInputProps {
+  value: string;
+  onChange: (data: { raw: string; masked: string }) => void;
+  mask: string;
+  title?: string;
+  obrigatory?: boolean;
+  disabled?: boolean;
+  placeholder?: string;
+  classname?: string;
+}
+
+export function MaskedInput({
+  value,
+  onChange,
+  mask,
+  title,
+  obrigatory,
+  disabled,
+  placeholder,
+  classname,
+}: MaskedInputProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const maximumLength = mask.replace(/[^*#&]/g, "").length;
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (disabled || event.ctrlKey || event.metaKey) return;
+
+    let raw = value ?? "";
+    const start = inputRef.current?.selectionStart ?? 0;
+    const end = inputRef.current?.selectionEnd ?? 0;
+    const rawStart = Math.min(
+      getRawIndexFromMaskedPosition(mask, start),
+      raw.length,
+    );
+    const rawEnd = Math.min(
+      getRawIndexFromMaskedPosition(mask, end),
+      raw.length,
+    );
+    const hasSelection = start !== end;
+    let nextCursorRawIndex = rawStart;
+
+    if (event.key === "Backspace") {
+      raw = hasSelection
+        ? raw.slice(0, rawStart) + raw.slice(rawEnd)
+        : raw.slice(0, Math.max(rawStart - 1, 0)) + raw.slice(rawStart);
+      nextCursorRawIndex = hasSelection ? rawStart : Math.max(rawStart - 1, 0);
+    } else if (event.key === "Delete") {
+      raw = hasSelection
+        ? raw.slice(0, rawStart) + raw.slice(rawEnd)
+        : raw.slice(0, rawStart) + raw.slice(rawStart + 1);
+    } else if (/^[a-zA-Z0-9]$/.test(event.key)) {
+      if (raw.length >= maximumLength && !hasSelection) {
+        event.preventDefault();
+        return;
+      }
+      const maskCharacter = mask.replace(/[^*#&]/g, "")[rawStart];
+      const isValid =
+        (maskCharacter === "*" && /\d/.test(event.key)) ||
+        (maskCharacter === "#" && /[a-zA-Z]/.test(event.key)) ||
+        maskCharacter === "&";
+      if (!isValid) {
+        event.preventDefault();
+        return;
+      }
+      raw = (
+        hasSelection
+          ? raw.slice(0, rawStart) + event.key + raw.slice(rawEnd)
+          : raw.slice(0, rawStart) + event.key + raw.slice(rawStart)
+      ).slice(0, maximumLength);
+      nextCursorRawIndex = Math.min(rawStart + 1, maximumLength);
+    } else {
+      return;
+    }
+
+    onChange({ raw, masked: buildMasked(raw, mask) });
+    event.preventDefault();
+    requestAnimationFrame(() => {
+      const cursor = getMaskedPositionFromRawIndex(mask, nextCursorRawIndex);
+      inputRef.current?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    if (disabled) return;
+    event.preventDefault();
+    const raw = event.clipboardData
+      .getData("text")
+      .replace(/[^a-zA-Z0-9]/g, "")
+      .slice(0, maximumLength);
+    onChange({ raw, masked: buildMasked(raw, mask) });
+    requestAnimationFrame(() => {
+      const cursor = getMaskedPositionFromRawIndex(mask, raw.length);
+      inputRef.current?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  return (
+    <TitledInput
+      ref={inputRef}
+      value={buildMasked(value ?? "", mask)}
+      onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
+      title={title}
+      obrigatory={obrigatory}
+      disabled={disabled}
+      placeholder={placeholder ?? mask.replace(/[*#&]/g, "_")}
+      className={classname}
+    />
+  );
+}
+
 export interface TitledFileInputProps extends Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
   "type" | "value"

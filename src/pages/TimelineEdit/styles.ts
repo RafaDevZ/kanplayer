@@ -137,18 +137,50 @@ export const SnapControl = styled.div`
       font-size: 10px;
     }
   }
+
+  .first-beat-input {
+    width: 76px;
+    min-width: 76px;
+
+    > div {
+      height: 24px;
+    }
+
+    input {
+      min-height: 24px;
+      padding: 0 4px;
+      border: 0 !important;
+      border-radius: 4px;
+      background-color: var(--black-300);
+      font-size: 10px;
+    }
+  }
 `;
 
-export const BpmDisplay = styled.span`
-  height: 24px;
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  box-sizing: border-box;
-  border-radius: 4px;
+export const BpmLabel = styled.span`
   color: var(--white);
   font-size: 10px;
   white-space: nowrap;
+`;
+
+export const FirstBeatLabel = styled(BpmLabel)``;
+
+export const BpmInput = styled.input`
+  height: 24px;
+  width: 58px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 0;
+  outline: 0;
+  box-sizing: border-box;
+  border-radius: 4px;
+  background-color: var(--black-300);
+  color: var(--white);
+  font-size: 10px;
+  text-align: center;
+  white-space: nowrap;
+
 `;
 
 export const WalkToggle = styled.button<{ $active: boolean }>`

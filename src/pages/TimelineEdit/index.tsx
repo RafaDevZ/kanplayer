@@ -4,6 +4,7 @@ import { autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react
 import { HexColorPicker } from "react-colorful";
 import * as TE from "./styles";
 import { Icons } from "../../components/Icons";
+import { MaskedInput } from "../../components/DefaultComponents";
 import { useTimeline, useUpdateTimeline } from "../../queries/useTimelines";
 import Dropdown from "../../components/Dropdown";
 import { DropdownOption } from "../../components/Dropdown/styles";
@@ -27,6 +28,29 @@ const getNiceInterval = (minimumInterval: number) => {
   const normalizedInterval = minimumInterval / magnitude;
   const factor = normalizedInterval <= 2 ? 2 : normalizedInterval <= 5 ? 5 : 10;
   return factor * magnitude;
+};
+
+const formatBpm = (bpm: number) =>
+  Number.isInteger(bpm) ? String(bpm) : String(Number(bpm.toFixed(2)));
+
+const firstBeatMask = "**:**.***";
+
+const formatFirstBeatRaw = (seconds: number) => {
+  const totalMilliseconds = Math.max(0, Math.round(seconds * 1_000));
+  const minutes = Math.floor(totalMilliseconds / 60_000);
+  const remainingMilliseconds = totalMilliseconds % 60_000;
+  const wholeSeconds = Math.floor(remainingMilliseconds / 1_000);
+  const milliseconds = remainingMilliseconds % 1_000;
+  return `${String(minutes).padStart(2, "0")}${String(wholeSeconds).padStart(2, "0")}${String(milliseconds).padStart(3, "0")}`;
+};
+
+const parseFirstBeatRaw = (raw: string) => {
+  if (!/^\d{7}$/.test(raw)) return;
+  const minutes = Number(raw.slice(0, 2));
+  const seconds = Number(raw.slice(2, 4));
+  const milliseconds = Number(raw.slice(4, 7));
+  if (seconds >= 60) return;
+  return minutes * 60 + seconds + milliseconds / 1_000;
 };
 
 const snapOptions = [
@@ -73,6 +97,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const [pendingEvent, setPendingEvent] = useState<TimelineEventProps>();
   const [selectedEventIds, setSelectedEventIds] = useState<number[]>([]);
   const [colorPickerStemName, setColorPickerStemName] = useState<string>();
+  const [bpmInputValue, setBpmInputValue] = useState("");
+  const [firstBeatInputValue, setFirstBeatInputValue] = useState("");
   const [editingStem, setEditingStem] = useState<{
     id: number;
     name: string;
@@ -139,6 +165,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     playheadReferenceXRef.current = undefined;
     setPlayerDurationSeconds(0);
     setRequestedPlayerTime(undefined);
+    setBpmInputValue("");
+    setFirstBeatInputValue("");
     previousPlayerTimeRef.current = undefined;
     nextLocalEventIdRef.current = -1;
     nextLocalStemIdRef.current = -1000;
@@ -160,6 +188,17 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       snapOptions.includes(savedTimeline.snap as SnapValue)
         ? (savedTimeline.snap as SnapValue)
         : "1/16",
+    );
+    setBpmInputValue(
+      formatBpm(
+        savedTimeline.bpm ??
+          (savedTimeline.beatIntervalSeconds
+            ? 60 / savedTimeline.beatIntervalSeconds
+            : 120),
+      ),
+    );
+    setFirstBeatInputValue(
+      formatFirstBeatRaw(savedTimeline.firstBeatSeconds ?? 0),
     );
     setIsPlayheadFollowEnabled(savedTimeline.followPlayhead);
     playheadFollowEnabledRef.current = savedTimeline.followPlayhead;
@@ -189,9 +228,10 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     ...new Set([...stems.map((stem) => stem.name), ...events.map((event) => event.stem)]),
   ];
   const selectedStem = stems.find((stem) => stem.name === colorPickerStemName);
-  const beatSeconds =
-    timeline?.beatIntervalSeconds ?? (timeline?.bpm ? 60 / timeline.bpm : 0.5);
-  const currentBpm = 60 / beatSeconds;
+  const currentBpm =
+    timeline?.bpm ??
+    (timeline?.beatIntervalSeconds ? 60 / timeline.beatIntervalSeconds : 120);
+  const beatSeconds = 60 / currentBpm;
   const snapSeconds =
     snap === "none"
       ? 0
@@ -209,6 +249,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
             (Number(snap.split("/")[1].replace("T", "")) * 3)
           : (beatSeconds * 4) / Number(snap.split("/")[1]);
   const barSeconds = beatSeconds * beatsPerBar;
+  const firstBeatSeconds = timeline?.firstBeatSeconds ?? 0;
   const storedDurationSeconds = timeline?.track.durationSeconds ?? 0;
   const eventFallbackDurationSeconds = Math.max(
     0,
@@ -223,10 +264,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const timelineBars = Math.max(
     1,
     Math.ceil(
-      Math.max(0, trackSeconds - barBoundaryToleranceSeconds) / barSeconds,
+      Math.max(0, trackSeconds - firstBeatSeconds - barBoundaryToleranceSeconds) /
+        barSeconds,
     ),
   );
-  const timelineSeconds = timelineBars * barSeconds;
+  const timelineSeconds = firstBeatSeconds + timelineBars * barSeconds;
   const editableDurationSeconds =
     trackSeconds > 0 ? trackSeconds : timelineSeconds;
   const contentScale = Math.max(1, timelineBars / visibleBars);
@@ -234,7 +276,9 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     1,
     timelineViewportWidth * contentScale,
   );
-  const pixelsPerBar = timelineContentWidth / timelineBars;
+  const pixelsPerBar = (barSeconds / timelineSeconds) * timelineContentWidth;
+  const firstBeatPixels =
+    (firstBeatSeconds / timelineSeconds) * timelineContentWidth;
   const barGridInterval = getNiceInterval(4 / pixelsPerBar);
   const subdivisionSeconds =
     snapSeconds > 0 && snapSeconds < barSeconds
@@ -250,7 +294,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const labelInterval = getNiceInterval(36 / pixelsPerBar);
   const rulerLabels = Array.from({ length: timelineBars }, (_, index) => ({
     bar: index + 1,
-    position: (index / timelineBars) * 100,
+    position:
+      ((firstBeatSeconds + index * barSeconds) / timelineSeconds) * 100,
   })).filter(({ bar }) => bar === 1 || bar % labelInterval === 0);
   const timelineGrid = useMemo(
     () => (
@@ -258,7 +303,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         {Array.from({ length: timelineBars }, (_, barIndex) => (
           <TE.TimelineGridBar
             key={barIndex}
-            $left={barIndex * pixelsPerBar}
+            $left={firstBeatPixels + barIndex * pixelsPerBar}
             $width={pixelsPerBar}
             $showBarLine={barIndex % barGridInterval === 0}
             $subdivisionPixels={subdivisionGridPixels}
@@ -266,7 +311,13 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         ))}
       </TE.TimelineGrid>
     ),
-    [barGridInterval, pixelsPerBar, subdivisionGridPixels, timelineBars],
+    [
+      barGridInterval,
+      firstBeatPixels,
+      pixelsPerBar,
+      subdivisionGridPixels,
+      timelineBars,
+    ],
   );
 
   const getPlayheadCanvasPosition = (timeSeconds: number) =>
@@ -654,6 +705,38 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
           stem.name === stemName ? { ...stem, color } : stem,
         ),
       }),
+    );
+  };
+
+  const updateBpm = (value: string) => {
+    setBpmInputValue(value);
+    const bpm = Number(value);
+    if (!value || !Number.isFinite(bpm) || bpm <= 0) return;
+
+    setTimeline((currentTimeline) =>
+      currentTimeline
+        ? timelineSchema.parse({
+            ...currentTimeline,
+            bpm,
+            beatIntervalSeconds: 60 / bpm,
+          })
+        : currentTimeline,
+    );
+  };
+
+  const resetBpmInput = () => setBpmInputValue(formatBpm(currentBpm));
+
+  const updateFirstBeat = (raw: string) => {
+    setFirstBeatInputValue(raw);
+    const firstBeat = parseFirstBeatRaw(raw);
+    if (firstBeat === undefined) return;
+    setTimeline((currentTimeline) =>
+      currentTimeline
+        ? timelineSchema.parse({
+            ...currentTimeline,
+            firstBeatSeconds: firstBeat,
+          })
+        : currentTimeline,
     );
   };
 
@@ -1193,9 +1276,40 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                     </DropdownOption>
                   ))}
                 </Dropdown>
-                <TE.BpmDisplay>
-                  {Number(currentBpm.toFixed(2))} BPM
-                </TE.BpmDisplay>
+                <TE.BpmLabel>BPM:</TE.BpmLabel>
+                <TE.BpmInput
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={bpmInputValue}
+                  aria-label="BPM da timeline"
+                  onChange={(event) => updateBpm(event.currentTarget.value)}
+                  onBlur={() => {
+                    if (
+                      !bpmInputValue ||
+                      !Number.isFinite(Number(bpmInputValue)) ||
+                      Number(bpmInputValue) <= 0
+                    ) {
+                      resetBpmInput();
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") {
+                      resetBpmInput();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+                <TE.FirstBeatLabel>1º beat:</TE.FirstBeatLabel>
+                <MaskedInput
+                  value={firstBeatInputValue}
+                  mask={firstBeatMask}
+                  title=""
+                  placeholder="00:00.000"
+                  classname="first-beat-input"
+                  onChange={({ raw }) => updateFirstBeat(raw)}
+                />
               </TE.SnapControl>
             </TE.TimelineHeader>
             <TE.Timeline>

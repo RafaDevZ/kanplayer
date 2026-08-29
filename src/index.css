@@ -41,8 +41,22 @@ body {
   background-color: var(--black-200);
   display: flex;
   font-family: 'Montserrat', sans-serif;
+
+  input {
+    font-family: 'Montserrat', sans-serif;
+  }
 }
 
 #root {
   display: flex;
+}
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
 }
