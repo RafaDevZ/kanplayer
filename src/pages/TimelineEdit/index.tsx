@@ -397,9 +397,13 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     );
     const unsnappedTime = (position / viewport.scrollWidth) * timelineSeconds;
     const snappedTime = snapSeconds
-      ? Math.round(unsnappedTime / snapSeconds) * snapSeconds
+      ? firstBeatSeconds +
+        Math.round((unsnappedTime - firstBeatSeconds) / snapSeconds) *
+          snapSeconds
       : unsnappedTime;
-    return Number(Math.min(snappedTime, editableDurationSeconds).toFixed(6));
+    return Number(
+      Math.max(0, Math.min(snappedTime, editableDurationSeconds)).toFixed(6),
+    );
   };
 
   const commitTimelineChange = (nextTimeline: TimelineProps) => {
