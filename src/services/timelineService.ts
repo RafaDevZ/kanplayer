@@ -17,9 +17,10 @@ const toTimelineSaveInput = (timeline: TimelineProps) => ({
   snap: timeline.snap,
   followPlayhead: timeline.followPlayhead,
   stems: timeline.stems.map(({ name, color }) => ({ name, color })),
-  events: timeline.events.map(({ stem, timeSeconds, origin }) => ({
+  events: timeline.events.map(({ stem, timeSeconds, confidence, origin }) => ({
     stem,
     timeSeconds,
+    confidence,
     origin,
   })),
 });

@@ -109,3 +109,31 @@ pub struct Timeline {
     pub stems: Vec<TimelineStem>,
     pub events: Vec<TimelineEvent>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RitraceRenderInput {
+    pub job_id: String,
+    pub audio_path: String,
+    pub kick_min_confidence: f64,
+    pub snare_min_confidence: f64,
+    pub hihat_min_confidence: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RitraceEvent {
+    pub stem: String,
+    pub time_seconds: f64,
+    pub confidence: f64,
+    pub origin: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RitraceRenderResult {
+    pub bpm: f64,
+    pub first_beat_seconds: f64,
+    pub beat_interval_seconds: f64,
+    pub events: Vec<RitraceEvent>,
+}

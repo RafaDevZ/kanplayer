@@ -12,6 +12,7 @@ pub fn run() {
             let database =
                 database::Database::initialize(&app.handle()).map_err(std::io::Error::other)?;
             app.manage(database);
+            app.manage(services::ritrace_service::RitraceJobRegistry::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -22,6 +23,8 @@ pub fn run() {
             commands::create_timeline,
             commands::update_timeline,
             commands::delete_timeline,
+            commands::render_ritrace,
+            commands::cancel_ritrace_render,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

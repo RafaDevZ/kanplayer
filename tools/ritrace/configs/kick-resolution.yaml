@@ -1,0 +1,12 @@
+# Conservative, grid-synchronous collision resolver for commercial electronic drums.
+enabled: true
+subdivision: 4
+window_before_ms: 40
+window_after_ms: 40
+block_bars: 8
+min_dense_classes: 2
+remove_score: 0.15
+add_score: 1.75
+min_drums_low_flux: 0.70
+min_kick_flux: -0.25
+

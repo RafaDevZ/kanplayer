@@ -1,0 +1,10 @@
+# Runtime used by the vendored Ritrace scripts. Install this in the Python
+# environment used by run_analysis.py; Demucs is installed separately in the
+# environment passed through --demucs-python.
+numpy>=1.26
+PyYAML>=6.0
+scipy>=1.11
+soundfile>=0.12
+librosa>=0.10
+torch>=2.4
+mdxnet-infer>=0.1.0

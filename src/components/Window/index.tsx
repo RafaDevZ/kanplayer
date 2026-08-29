@@ -30,10 +30,11 @@ interface WindowProps {
   icon?: ReactNode;
   className?: string;
   noPadding?: boolean;
+  disableClose?: boolean;
   onResizeTransitionEnd?: () => void;
 }
 
-function Window({ isVisible, children, onClose, height, width, zIndex, style, title, icon, className, noPadding, onResizeTransitionEnd }: WindowProps) {
+function Window({ isVisible, children, onClose, height, width, zIndex, style, title, icon, className, noPadding, disableClose = false, onResizeTransitionEnd }: WindowProps) {
   const [shouldRender, setShouldRender] = useState<boolean>(isVisible);
   const [isClosing, setIsClosing] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -152,12 +153,12 @@ function Window({ isVisible, children, onClose, height, width, zIndex, style, ti
     const didStartOnBackdrop = backdropPointerStartedRef.current;
     backdropPointerStartedRef.current = false;
 
-    if (isDragging || !didStartOnBackdrop) return;
+    if (disableClose || isDragging || !didStartOnBackdrop) return;
 
     if (e.target === e.currentTarget) {
       onClose?.();
     }
-  }, [isDragging, onClose]);
+  }, [disableClose, isDragging, onClose]);
 
   const handleHeaderPointerDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
@@ -185,8 +186,9 @@ function Window({ isVisible, children, onClose, height, width, zIndex, style, ti
 
   const handleCloseClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.stopPropagation();
+    if (disableClose) return;
     onClose?.();
-  }, [onClose]);
+  }, [disableClose, onClose]);
 
   if (!shouldRender) return null;
 
@@ -242,7 +244,11 @@ function Window({ isVisible, children, onClose, height, width, zIndex, style, ti
 
           {title}
 
-          <CloseButton onClick={handleCloseClick}>
+          <CloseButton
+            onClick={handleCloseClick}
+            $disabled={disableClose}
+            aria-disabled={disableClose}
+          >
             {Icons.closeIcon}
           </CloseButton>
         </WindowHeader>

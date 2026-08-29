@@ -1,0 +1,40 @@
+# Adaptive peak extraction is run after DrumSep, one configuration per layer.
+hop_length: 256
+classes:
+  kick:
+    delta: 0.15
+    min_distance_ms: 85
+    min_frequency_hz: 35
+    max_frequency_hz: 250
+    min_confidence: 0.30
+    peak_window_ms: 130
+    tail_guard_ms: 220
+    min_relative_peak: 0.70
+    max_peak_duration_ms: 200
+    peak_decay_ratio: 0.35
+    grid_subdivision: 4
+    grid_tolerance_ms: 35
+  snare:
+    delta: 0.13
+    min_distance_ms: 65
+    min_frequency_hz: 120
+    max_frequency_hz: 7_000
+    min_confidence: 0.25
+    peak_window_ms: 100
+    tail_guard_ms: 140
+    min_relative_peak: 0.60
+    grid_subdivision: 4
+    grid_tolerance_ms: 35
+  hihat:
+    delta: 0.10
+    min_distance_ms: 30
+    min_frequency_hz: 4_000
+    max_frequency_hz: 18_000
+    min_confidence: 0.20
+    peak_window_ms: 55
+    tail_guard_ms: 75
+    min_relative_peak: 0.62
+    # Hats have short, syncopated transients. A shorter analysis window keeps
+    # rapid articulations distinct; unlike kick/snare, do not force a 1/16 grid.
+    onset_fft_size: 1_024
+

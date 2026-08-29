@@ -1,5 +1,5 @@
 import ReactDOM from "react-dom/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import { AlertProvider } from "./providers/AlertProvider";
@@ -11,6 +11,15 @@ const queryClient = new QueryClient();
 
 function App() {
   const [timelineTrackPath, setTimelineTrackPath] = useState<string>();
+
+  useEffect(() => {
+    const preventNativeContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    document.addEventListener("contextmenu", preventNativeContextMenu);
+    return () =>
+      document.removeEventListener("contextmenu", preventNativeContextMenu);
+  }, []);
 
   if (timelineTrackPath) {
     return (

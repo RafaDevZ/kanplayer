@@ -97,12 +97,13 @@ export const ChildrenContainer = styled.div<{ $noPadding?: boolean }>`
   `}
 `;
 
-export const CloseButton = styled.div`
+export const CloseButton = styled.div<{ $disabled?: boolean }>`
   position: absolute;
   right: 4px;
   height: 22px;
   width: 22px;
-  cursor: pointer;
+  cursor: ${props => (props.$disabled ? "not-allowed" : "pointer")};
+  opacity: ${props => (props.$disabled ? 0.4 : 1)};
   display: flex;
   align-items: center;
   justify-content: center;

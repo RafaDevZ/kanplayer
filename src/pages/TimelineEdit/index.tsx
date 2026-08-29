@@ -1,11 +1,22 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react-dom";
 import { HexColorPicker } from "react-colorful";
 import * as TE from "./styles";
 import { Icons } from "../../components/Icons";
-import { MaskedInput } from "../../components/DefaultComponents";
+import {
+  Button,
+  MaskedInput,
+  TitledInput,
+} from "../../components/DefaultComponents";
+import Window from "../../components/Window";
 import { useTimeline, useUpdateTimeline } from "../../queries/useTimelines";
+import { useRitraceCancel, useRitraceRender } from "../../queries/useRitrace";
+import {
+  ritraceProgressSchema,
+  type RitraceProgressProps,
+} from "../../interfaces/Ritrace";
 import Dropdown from "../../components/Dropdown";
 import { DropdownOption } from "../../components/Dropdown/styles";
 import Player from "../player";
@@ -53,6 +64,13 @@ const parseFirstBeatRaw = (raw: string) => {
   return minutes * 60 + seconds + milliseconds / 1_000;
 };
 
+const formatElapsedTime = (elapsedSeconds: number) => {
+  const totalSeconds = Math.max(0, Math.floor(elapsedSeconds));
+  return `Tempo decorrido: ${Math.floor(totalSeconds / 60)}:${String(
+    totalSeconds % 60,
+  ).padStart(2, "0")}`;
+};
+
 const snapOptions = [
   "1/1",
   "1/2",
@@ -84,6 +102,17 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const [timeline, setTimeline] = useState<TimelineProps>();
   const [snap, setSnap] = useState<SnapValue>("1/16");
   const [isSnapOpen, setIsSnapOpen] = useState(false);
+  const [isRitraceWindowVisible, setIsRitraceWindowVisible] = useState(false);
+  const [ritraceConfidence, setRitraceConfidence] = useState({
+    kick: 30,
+    snare: 25,
+    hihat: 20,
+  });
+  const [ritraceProgress, setRitraceProgress] = useState<RitraceProgressProps>();
+  const [ritraceJobId, setRitraceJobId] = useState<string>();
+  const [isRitraceRenderComplete, setIsRitraceRenderComplete] =
+    useState(false);
+  const [ritraceClock, setRitraceClock] = useState(0);
   const [isPlayheadFollowEnabled, setIsPlayheadFollowEnabled] = useState(false);
   const [playerDurationSeconds, setPlayerDurationSeconds] = useState(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
@@ -141,6 +170,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const nextLocalStemIdRef = useRef(-1000);
   const copiedEventsRef = useRef<TimelineEventProps[]>([]);
   const lastPasteStartSecondsRef = useRef<number | undefined>(undefined);
+  const ritraceStartedAtRef = useRef<number | undefined>(undefined);
   const previousPlayerTimeRef = useRef<number | undefined>(undefined);
   const flashTimeoutsRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -156,7 +186,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       middleware: [offset(6), flip(), shift({ padding: 4 })],
       whileElementsMounted: autoUpdate,
     });
-  const { mutate: saveTimeline, isPending: isSavingTimeline } =
+  const { mutate: saveTimeline, mutateAsync: updateTimelineAsync, isPending: isSavingTimeline } =
     useUpdateTimeline((updatedTimeline) => {
       setTimeline(updatedTimeline);
       setSelectedEventIds([]);
@@ -164,6 +194,95 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       timelineHistoryRef.current = { past: [], future: [] };
       nextLocalEventIdRef.current = -1;
     });
+  const { mutateAsync: renderRitrace, isPending: isRenderingRitrace } =
+    useRitraceRender();
+  const { mutate: cancelRitrace, isPending: isCancellingRitrace } =
+    useRitraceCancel();
+
+  const handleRitraceRender = async () => {
+    if (!timeline || isRenderingRitrace || isRitraceRenderComplete) return;
+    const jobId = crypto.randomUUID();
+    setRitraceJobId(jobId);
+    let completed = false;
+    ritraceStartedAtRef.current = Date.now();
+    setRitraceProgress({
+      jobId,
+      stage: "Preparando RiTrace",
+      percent: 0,
+      elapsedSeconds: 0,
+    });
+    const unlisten = await listen<unknown>("ritrace-progress", (event) => {
+      const progress = ritraceProgressSchema.safeParse(event.payload);
+      if (progress.success && progress.data.jobId === jobId) {
+        setRitraceProgress(progress.data);
+      }
+    });
+    try {
+      const result = await renderRitrace({
+        jobId,
+        audioPath: timeline.track.path,
+        kickMinConfidence: ritraceConfidence.kick / 100,
+        snareMinConfidence: ritraceConfidence.snare / 100,
+        hihatMinConfidence: ritraceConfidence.hihat / 100,
+      });
+      const importedTimeline = timelineSchema.parse({
+        ...timeline,
+        bpm: result.bpm,
+        firstBeatSeconds: result.firstBeatSeconds,
+        beatIntervalSeconds: result.beatIntervalSeconds,
+        stems: defaultTimelineStems,
+        events: result.events.map((event) => ({
+          ...event,
+          id: 0,
+        })),
+      });
+      await updateTimelineAsync(importedTimeline);
+      setBpmInputValue(formatBpm(result.bpm));
+      setFirstBeatInputValue(formatFirstBeatRaw(result.firstBeatSeconds));
+      completed = true;
+      setIsRitraceRenderComplete(true);
+      setRitraceProgress({
+        jobId,
+        stage: "Concluído e salvo",
+        percent: 100,
+        elapsedSeconds: ritraceStartedAtRef.current
+          ? (Date.now() - ritraceStartedAtRef.current) / 1_000
+          : 0,
+      });
+    } finally {
+      unlisten();
+      ritraceStartedAtRef.current = undefined;
+      setRitraceJobId(undefined);
+      if (!completed) setRitraceProgress(undefined);
+    }
+  };
+
+  const openRitraceWindow = () => {
+    setRitraceProgress(undefined);
+    setIsRitraceRenderComplete(false);
+    setIsRitraceWindowVisible(true);
+  };
+
+  const closeRitraceWindow = () => {
+    if (isRenderingRitrace) return;
+    setRitraceProgress(undefined);
+    setIsRitraceRenderComplete(false);
+    setIsRitraceWindowVisible(false);
+  };
+
+  const handleCancelRitrace = () => {
+    if (!ritraceJobId || isCancellingRitrace) return;
+    setRitraceProgress((progress) =>
+      progress ? { ...progress, stage: "Cancelando RiTrace" } : progress,
+    );
+    cancelRitrace(ritraceJobId);
+  };
+
+  useEffect(() => {
+    if (!isRenderingRitrace) return;
+    const interval = window.setInterval(() => setRitraceClock(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [isRenderingRitrace]);
 
   useEffect(() => {
     setVisibleBars(4);
@@ -286,9 +405,18 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     1,
     timelineViewportWidth * contentScale,
   );
-  const pixelsPerBar = (barSeconds / timelineSeconds) * timelineContentWidth;
-  const firstBeatPixels =
-    (firstBeatSeconds / timelineSeconds) * timelineContentWidth;
+  const getTimelinePositionRatio = (timeSeconds: number) =>
+    Math.max(0, Math.min(timeSeconds, timelineSeconds)) / timelineSeconds;
+  const getTimelinePositionPixels = (timeSeconds: number) =>
+    getTimelinePositionRatio(timeSeconds) * timelineContentWidth;
+  const getTimelinePositionPercent = (timeSeconds: number) =>
+    getTimelinePositionRatio(timeSeconds) * 100;
+  const getTimelineTimeAtCanvasPosition = (position: number) =>
+    Math.max(0, Math.min(position, timelineContentWidth)) /
+    timelineContentWidth *
+    timelineSeconds;
+  const pixelsPerBar = getTimelinePositionPixels(barSeconds);
+  const firstBeatPixels = getTimelinePositionPixels(firstBeatSeconds);
   const barGridInterval = getNiceInterval(4 / pixelsPerBar);
   const subdivisionSeconds =
     snapSeconds > 0 && snapSeconds < barSeconds
@@ -304,8 +432,9 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const labelInterval = getNiceInterval(36 / pixelsPerBar);
   const rulerLabels = Array.from({ length: timelineBars }, (_, index) => ({
     bar: index + 1,
-    position:
-      ((firstBeatSeconds + index * barSeconds) / timelineSeconds) * 100,
+    position: getTimelinePositionPercent(
+      firstBeatSeconds + index * barSeconds,
+    ),
   })).filter(({ bar }) => bar === 1 || bar % labelInterval === 0);
   const timelineGrid = useMemo(
     () => (
@@ -330,9 +459,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     ],
   );
 
-  const getPlayheadCanvasPosition = (timeSeconds: number) =>
-    (Math.max(0, Math.min(timeSeconds, timelineSeconds)) / timelineSeconds) *
-    timelineContentWidth;
+  const getPlayheadCanvasPosition = getTimelinePositionPixels;
 
   const updatePlayheadVisual = (timeSeconds: number) => {
     const clampedTime = Math.max(0, Math.min(timeSeconds, timelineSeconds));
@@ -390,7 +517,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       ),
     );
     const nextTime = Math.min(
-      (position / viewport.scrollWidth) * timelineSeconds,
+      getTimelineTimeAtCanvasPosition(position),
       editableDurationSeconds,
     );
     updatePlayheadVisual(nextTime);
@@ -405,7 +532,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       0,
       Math.min(clientX - left + viewport.scrollLeft, viewport.scrollWidth),
     );
-    const unsnappedTime = (position / viewport.scrollWidth) * timelineSeconds;
+    const unsnappedTime = getTimelineTimeAtCanvasPosition(position);
     const snappedTime = snapSeconds
       ? firstBeatSeconds +
         Math.round((unsnappedTime - firstBeatSeconds) / snapSeconds) *
@@ -1259,7 +1386,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
           const currentPulse = layerPulseRefs.current.get(layer);
           if (currentPulse) currentPulse.style.opacity = "0";
           flashTimeoutsRef.current.delete(layer);
-        }, 120);
+        }, 55);
         flashTimeoutsRef.current.set(layer, timeout);
       });
     }
@@ -1277,8 +1404,115 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   );
 
   return (
-    <TE.Body data-loading={isLoading} data-timeline-id={timeline?.id}>
-      <TE.Header>
+    <>
+      <Window
+        isVisible={isRitraceWindowVisible}
+        disableClose={isRenderingRitrace}
+        onClose={closeRitraceWindow}
+        title="Renderizar com RiTrace"
+        width="400px"
+        height="500px"
+        icon={Icons.timelineIcon}
+      >
+        <TE.RitraceWindowBody>
+          <TE.RitraceForm>
+            <TitledInput
+              title="Fidelidade mínima do kick"
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={ritraceConfidence.kick}
+              disabled={isRenderingRitrace}
+              onChange={(event) => {
+                const value = Math.min(100, Number(event.currentTarget.value));
+                setRitraceConfidence((confidence) => ({
+                  ...confidence,
+                  kick: value,
+                }));
+              }}
+            />
+            <TitledInput
+              title="Fidelidade mínima do snare"
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={ritraceConfidence.snare}
+              disabled={isRenderingRitrace}
+              onChange={(event) => {
+                const value = Math.min(100, Number(event.currentTarget.value));
+                setRitraceConfidence((confidence) => ({
+                  ...confidence,
+                  snare: value,
+                }));
+              }}
+            />
+            <TitledInput
+              title="Fidelidade mínima do hihat"
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={ritraceConfidence.hihat}
+              disabled={isRenderingRitrace}
+              onChange={(event) => {
+                const value = Math.min(100, Number(event.currentTarget.value));
+                setRitraceConfidence((confidence) => ({
+                  ...confidence,
+                  hihat: value,
+                }));
+              }}
+            />
+          </TE.RitraceForm>
+          <TE.RitraceOverwriteWarning>
+            A importação vai sobrescrever todos os stems e eventos atuais desta
+            timeline.
+          </TE.RitraceOverwriteWarning>
+          {ritraceProgress && (
+            <TE.RitraceProgress>
+              <strong>{ritraceProgress.stage}</strong>
+              <span>{ritraceProgress.percent}%</span>
+              <small>
+                {formatElapsedTime(
+                  Math.max(
+                    ritraceProgress.elapsedSeconds,
+                    ritraceStartedAtRef.current
+                      ? (ritraceClock - ritraceStartedAtRef.current) / 1_000
+                      : 0,
+                  ),
+                )}
+              </small>
+            </TE.RitraceProgress>
+          )}
+          <TE.RitraceActions>
+            <Button
+              type="button"
+              disabled={!timeline}
+              loading={isRenderingRitrace}
+              onClick={
+                isRitraceRenderComplete
+                  ? closeRitraceWindow
+                  : handleRitraceRender
+              }
+            >
+              {isRitraceRenderComplete ? "Fechar" : "Renderizar"}
+            </Button>
+            {isRenderingRitrace && (
+              <Button
+                type="button"
+                disabled={!ritraceJobId || isCancellingRitrace}
+                loading={isCancellingRitrace}
+                onClick={handleCancelRitrace}
+              >
+                Cancelar
+              </Button>
+            )}
+          </TE.RitraceActions>
+        </TE.RitraceWindowBody>
+      </Window>
+      <TE.Body data-loading={isLoading} data-timeline-id={timeline?.id}>
+        <TE.Header>
         <TE.HeaderButton onClick={onBack}>{Icons.returnIcon}</TE.HeaderButton>
         {import.meta.env.DEV && (
           <TE.HeaderButton
@@ -1290,6 +1524,14 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
             {Icons.reloadIcon}
           </TE.HeaderButton>
         )}
+        <TE.HeaderButton
+          type="button"
+          title="Renderizar com RiTrace"
+          aria-label="Renderizar com RiTrace"
+          onClick={openRitraceWindow}
+        >
+          {Icons.timelineIcon}
+        </TE.HeaderButton>
         <TE.HeaderSpacer />
         <TE.SaveButton
           type="button"
@@ -1298,8 +1540,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         >
           {isSavingTimeline ? "Salvando..." : "Salvar"}
         </TE.SaveButton>
-      </TE.Header>
-      <TE.Container>
+        </TE.Header>
+        <TE.Container>
         <TE.LeftPanel />
         <TE.CenterPanel>
           <TE.CenterTop />
@@ -1567,7 +1809,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                             $color={stemColors.get(layer) ?? "var(--green-200)"}
                             $isPending
                             style={{
-                              left: `${(pendingEvent.timeSeconds / timelineSeconds) * 100}%`,
+                              left: `${getTimelinePositionPercent(pendingEvent.timeSeconds)}%`,
                             }}
                           />
                         )}
@@ -1603,12 +1845,10 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                                 deleteTimelineEvents([event.id]);
                               }}
                               style={{
-                                left: `${
-                                  ((draggedEventTimes.get(event.id) ??
-                                    event.timeSeconds) /
-                                    timelineSeconds) *
-                                  100
-                                }%`,
+                                left: `${getTimelinePositionPercent(
+                                  draggedEventTimes.get(event.id) ??
+                                    event.timeSeconds,
+                                )}%`,
                               }}
                             />
                           ))}
@@ -1639,6 +1879,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         </TE.CenterPanel>
         <TE.RightPanel />
       </TE.Container>
-    </TE.Body>
+      </TE.Body>
+    </>
   );
 }

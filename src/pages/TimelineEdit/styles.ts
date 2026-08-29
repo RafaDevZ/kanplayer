@@ -1,6 +1,7 @@
 import styled from "styled-components";
 import {
   DftScrollX,
+  FormContainerBlueprint,
   HeaderBlueprint,
 } from "../../components/DefaultComponents/styles";
 
@@ -48,6 +49,57 @@ export const SaveButton = styled(HeaderButton)`
   &:disabled {
     cursor: not-allowed;
     opacity: 0.6;
+  }
+`;
+
+export const RitraceForm = styled(FormContainerBlueprint)`
+  padding-top: 10px;
+`;
+
+export const RitraceWindowBody = styled.div`
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+
+  .submit {
+    width: 100%;
+  }
+`;
+
+export const RitraceOverwriteWarning = styled.p`
+  margin: 0 0 10px;
+  color: var(--yellow-200);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+`;
+
+export const RitraceProgress = styled.div`
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0 0 10px;
+  padding: 8px;
+  border-radius: 4px;
+  background-color: var(--black-300);
+  color: var(--white);
+  font-size: 12px;
+
+  small {
+    grid-column: 1 / -1;
+    color: var(--white-200);
+    font-size: 10px;
+  }
+`;
+
+export const RitraceActions = styled.div`
+  display: flex;
+  gap: 4px;
+
+  > button {
+    flex: 1;
   }
 `;
 
@@ -507,11 +559,6 @@ export const EventsViewport = styled.div`
   overflow-y: hidden;
   background-color: var(--black-200);
   ${DftScrollX}
-  scrollbar-width: none;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
 `;
 
 export const EventsCanvas = styled.div<{ $contentWidth: number }>`
