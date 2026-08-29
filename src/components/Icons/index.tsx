@@ -17,6 +17,6 @@ export const Icons = {
     <Icon icon="solar:restart-outline" style={{ height: 18, width: 18 }} />
   ),
   triangleIcon: (
-    <Icon icon="bi:diamond-half" style={{ height: 18, width: 18 }} />
+    <Icon icon="bi:diamond-half" style={{ height: 12, width: 12 }} />
   ),
 };

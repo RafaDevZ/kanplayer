@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useEffect, type CSSProperties } from "react";
 import { Icons } from "../../components/Icons";
 import { usePlayer } from "../../hooks/player/usePlayer";
 import * as PL from "./styles";
@@ -12,6 +12,7 @@ export interface PlayerProps {
   seekTime?: number;
   onDurationChange?: (duration: number) => void;
   onTimeChange?: (currentTime: number) => void;
+  enableSpacebarShortcut?: boolean;
 }
 
 export default function Player({
@@ -20,6 +21,7 @@ export default function Player({
   seekTime,
   onDurationChange,
   onTimeChange,
+  enableSpacebarShortcut = false,
 }: PlayerProps) {
   const {
     activeAudio,
@@ -38,6 +40,17 @@ export default function Player({
     onDurationChange,
     onTimeChange,
   });
+
+  useEffect(() => {
+    if (!enableSpacebarShortcut) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.repeat) return;
+      event.preventDefault();
+      togglePlayback();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [enableSpacebarShortcut, togglePlayback]);
 
   return (
     <PL.Body>

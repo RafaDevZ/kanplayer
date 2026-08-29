@@ -37,6 +37,20 @@ export const HeaderButton = styled.button`
   }
 `;
 
+export const HeaderSpacer = styled.div`
+  flex: 1;
+`;
+
+export const SaveButton = styled(HeaderButton)`
+  width: auto;
+  padding: 0 12px;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+`;
+
 export const Container = styled.div`
   flex: 1;
   display: flex;
@@ -125,6 +139,20 @@ export const SnapControl = styled.div`
   }
 `;
 
+export const BpmDisplay = styled.span`
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  color: var(--white);
+  font-size: 10px;
+  white-space: nowrap;
+`;
+
+export const BPMDiv = styled.div``;
+
 export const Timeline = styled.div`
   flex: 1;
   min-height: 0;
@@ -144,7 +172,7 @@ export const RulerLayersSpacer = styled.div`
   width: 130px;
   min-width: 130px;
   box-sizing: border-box;
-  background-color: var(--black-200);
+  background-color: var(--black-100);
   border-radius: 4px 0 0;
   border-right: 1px solid var(--black-400);
 `;
@@ -156,33 +184,75 @@ export const RulerViewport = styled.div`
 `;
 
 export const RulerTrack = styled.div<{
-  $barGridPercent: number;
-  $subdivisionGridPercent?: number;
-  $contentScale: number;
+  $contentWidth: number;
 }>`
   height: 100%;
-  width: ${({ $contentScale }) => $contentScale * 100}%;
-  min-width: ${({ $contentScale }) => $contentScale * 100}%;
+  width: ${({ $contentWidth }) => $contentWidth}px;
+  min-width: ${({ $contentWidth }) => $contentWidth}px;
   position: relative;
   cursor: pointer;
   overflow: hidden;
   border-radius: 0 4px 0 0;
-  background-color: var(--black-200);
-  background-image: ${({ $subdivisionGridPercent }) =>
-    $subdivisionGridPercent
-      ? "linear-gradient(to right, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px),"
-      : ""}
-    linear-gradient(to right, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px);
-  background-size: ${({ $subdivisionGridPercent }) =>
-    $subdivisionGridPercent ? `${$subdivisionGridPercent}% 100%,` : ""}
-    ${({ $barGridPercent }) => $barGridPercent}% 100%;
-  background-repeat: repeat-x;
+  background-color: #363636;
+`;
+
+export const TimelineGrid = styled.div`
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+`;
+
+export const TimelineGridBar = styled.div<{
+  $left: number;
+  $width: number;
+  $showBarLine: boolean;
+  $subdivisionPixels?: number;
+}>`
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: ${({ $left }) => $left}px;
+  width: ${({ $width }) => $width}px;
+  box-sizing: border-box;
+
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 1px;
+    background-color: ${({ $showBarLine }) =>
+      $showBarLine ? "rgba(255, 255, 255, 0.22)" : "transparent"};
+  }
+
+  &::after {
+    content: "";
+    display: ${({ $subdivisionPixels }) =>
+      $subdivisionPixels ? "block" : "none"};
+    position: absolute;
+    top: 0;
+    right: ${({ $subdivisionPixels }) =>
+      $subdivisionPixels ? $subdivisionPixels / 2 : 0}px;
+    bottom: 0;
+    left: ${({ $subdivisionPixels }) => $subdivisionPixels ?? 0}px;
+    background-image: linear-gradient(
+      to right,
+      rgba(255, 255, 255, 0.07) 0 1px,
+      transparent 1px
+    );
+    background-size: ${({ $subdivisionPixels }) =>
+      $subdivisionPixels ? `${$subdivisionPixels}px 100%` : "auto"};
+    background-repeat: repeat-x;
+  }
 `;
 
 export const RulerPlayhead = styled.div<{ $position: number }>`
   position: absolute;
-  bottom: 8px;
-  left: calc(${({ $position }) => $position}% - 1px);
+  bottom: 3px;
+  left: calc(${({ $position }) => $position}% + 2px);
   width: 5px;
   cursor: pointer;
   z-index: 1;
@@ -212,6 +282,7 @@ export const RulerTick = styled.span<{
   pointer-events: none;
   transform: translateX(2px);
   box-sizing: border-box;
+  z-index: 1;
 `;
 
 export const TimelineTracks = styled.div`
@@ -237,6 +308,7 @@ export const Layer = styled.div`
   min-height: 48px;
   display: flex;
   align-items: center;
+  position: relative;
   padding: 0 10px;
   box-sizing: border-box;
   border-right: 1px solid var(--black-400);
@@ -258,6 +330,22 @@ export const Layer = styled.div`
   }
 `;
 
+export const LayerPulse = styled.div<{
+  $color: string;
+  $active: boolean;
+}>`
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  transform: translateY(-50%);
+  background-color: ${({ $color }) => $color};
+  opacity: ${({ $active }) => ($active ? 1 : 0)};
+  pointer-events: none;
+  transition: opacity 70ms ease-out;
+`;
+
 export const EventsViewport = styled.div`
   flex: 1;
   min-width: 0;
@@ -267,17 +355,36 @@ export const EventsViewport = styled.div`
   ${DftScrollX}
 `;
 
-export const EventsCanvas = styled.div<{ $contentScale: number }>`
-  width: ${({ $contentScale }) => $contentScale * 100}%;
-  min-width: ${({ $contentScale }) => $contentScale * 100}%;
+export const EventsCanvas = styled.div<{ $contentWidth: number }>`
+  width: ${({ $contentWidth }) => $contentWidth}px;
+  min-width: ${({ $contentWidth }) => $contentWidth}px;
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
+  background-color: var(--black-200);
+`;
+
+export const SelectionBox = styled.div<{
+  $left: number;
+  $top: number;
+  $width: number;
+  $height: number;
+}>`
+  position: absolute;
+  left: ${({ $left }) => $left}px;
+  top: ${({ $top }) => $top}px;
+  width: ${({ $width }) => $width}px;
+  height: ${({ $height }) => $height}px;
+  box-sizing: border-box;
+  border: 1px solid var(--blue-100);
+  border-radius: 4px;
+  background-color: rgba(0, 174, 239, 0.16);
+  pointer-events: none;
+  z-index: 2;
 `;
 
 export const EventLane = styled.div<{
-  $barGridPercent: number;
-  $subdivisionGridPercent?: number;
   $playheadPercent: number;
 }>`
   height: 48px;
@@ -288,16 +395,8 @@ export const EventLane = styled.div<{
   overflow: hidden;
   box-sizing: border-box;
   cursor: crosshair;
-  background-color: var(--black-200);
-  background-image: ${({ $subdivisionGridPercent }) =>
-    $subdivisionGridPercent
-      ? "linear-gradient(to right, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px),"
-      : ""}
-    linear-gradient(to right, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px);
-  background-size: ${({ $subdivisionGridPercent }) =>
-    $subdivisionGridPercent ? `${$subdivisionGridPercent}% 100%,` : ""}
-    ${({ $barGridPercent }) => $barGridPercent}% 100%;
-  background-repeat: repeat-x;
+  background-color: transparent;
+  z-index: 1;
 
   &::before {
     content: "";
@@ -335,13 +434,21 @@ export const EventLane = styled.div<{
   }
 `;
 
-export const EventMarker = styled.span<{ $color: string }>`
+export const EventMarker = styled.span<{
+  $color: string;
+  $isPending?: boolean;
+  $isSelected?: boolean;
+}>`
   height: 10px;
   width: 10px;
   position: absolute;
   top: 50%;
   border-radius: 50%;
   background-color: ${({ $color }) => $color};
+  opacity: ${({ $isPending }) => ($isPending ? 0.45 : 1)};
+  outline: ${({ $isSelected }) =>
+    $isSelected ? "1px solid var(--white)" : "none"};
+  outline-offset: 2px;
   transform: translate(-50%, -50%);
   z-index: 1;
   cursor: grab;

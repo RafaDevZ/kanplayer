@@ -45,7 +45,9 @@ export function useCreateTimeline(onCreated?: () => void) {
   });
 }
 
-export function useUpdateTimeline() {
+export function useUpdateTimeline(
+  onUpdated?: (timeline: TimelineProps) => void,
+) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (timeline: TimelineProps) => timelineService.update(timeline),
@@ -68,6 +70,7 @@ export function useUpdateTimeline() {
         timeline,
       );
       queryClient.invalidateQueries({ queryKey: timelineKeys.all });
+      onUpdated?.(timeline);
     },
   });
 }
