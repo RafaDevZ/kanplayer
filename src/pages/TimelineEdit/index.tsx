@@ -96,6 +96,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   );
   const [pendingEvent, setPendingEvent] = useState<TimelineEventProps>();
   const [selectedEventIds, setSelectedEventIds] = useState<number[]>([]);
+  const [selectedStemIds, setSelectedStemIds] = useState<number[]>([]);
   const [colorPickerStemName, setColorPickerStemName] = useState<string>();
   const [bpmInputValue, setBpmInputValue] = useState("");
   const [firstBeatInputValue, setFirstBeatInputValue] = useState("");
@@ -113,6 +114,10 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     currentX: number;
     currentY: number;
   }>();
+  const [stemSelectionBox, setStemSelectionBox] = useState<{
+    startY: number;
+    currentY: number;
+  }>();
   const rulerViewportRef = useRef<HTMLDivElement>(null);
   const eventsViewportRef = useRef<HTMLDivElement>(null);
   const rulerPlayheadRef = useRef<HTMLDivElement>(null);
@@ -123,9 +128,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const pendingEventRef = useRef<TimelineEventProps | undefined>(undefined);
   const eventMarkerRefs = useRef(new Map<number, HTMLSpanElement>());
   const layerPulseRefs = useRef(new Map<string, HTMLDivElement>());
+  const stemRefs = useRef(new Map<number, HTMLDivElement>());
   const selectionStartRef = useRef<
     { clientX: number; clientY: number } | undefined
   >(undefined);
+  const stemSelectionStartRef = useRef<number | undefined>(undefined);
   const dragPointerXRef = useRef(0);
   const playheadSecondsRef = useRef(0);
   const playheadFollowEnabledRef = useRef(false);
@@ -153,6 +160,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     useUpdateTimeline((updatedTimeline) => {
       setTimeline(updatedTimeline);
       setSelectedEventIds([]);
+      setSelectedStemIds([]);
       timelineHistoryRef.current = { past: [], future: [] };
       nextLocalEventIdRef.current = -1;
     });
@@ -175,6 +183,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     flashTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
     flashTimeoutsRef.current.clear();
     setSelectedEventIds([]);
+    setSelectedStemIds([]);
     setColorPickerStemName(undefined);
     setEditingStem(undefined);
     timelineHistoryRef.current = { past: [], future: [] };
@@ -204,6 +213,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     playheadFollowEnabledRef.current = savedTimeline.followPlayhead;
     playheadReferenceXRef.current = undefined;
     setSelectedEventIds([]);
+    setSelectedStemIds([]);
     setColorPickerStemName(undefined);
     setEditingStem(undefined);
     timelineHistoryRef.current = { past: [], future: [] };
@@ -429,6 +439,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
           }
         : { past: [...past, timeline].slice(-100), future: future.slice(1) };
     setSelectedEventIds([]);
+    setSelectedStemIds([]);
     setTimeline(target);
     return true;
   };
@@ -572,6 +583,59 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     setSelectionBox(undefined);
   };
 
+  const startStemSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.ctrlKey) return;
+    const layersContainer = layersRef.current;
+    if (!layersContainer) return;
+    const { top } = layersContainer.getBoundingClientRect();
+    const startY = event.clientY - top + layersContainer.scrollTop;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    stemSelectionStartRef.current = event.clientY;
+    setSelectedStemIds([]);
+    setStemSelectionBox({ startY, currentY: startY });
+  };
+
+  const moveStemSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    const startY = stemSelectionStartRef.current;
+    const layersContainer = layersRef.current;
+    if (startY === undefined || !layersContainer) return;
+    const { top } = layersContainer.getBoundingClientRect();
+    const currentY = event.clientY - top + layersContainer.scrollTop;
+    setStemSelectionBox((currentBox) =>
+      currentBox ? { ...currentBox, currentY } : currentBox,
+    );
+
+    const topBoundary = Math.min(startY, event.clientY);
+    const bottomBoundary = Math.max(startY, event.clientY);
+    setSelectedStemIds(
+      timeline?.stems
+        .filter((stem) => {
+          const stemElement = stemRefs.current.get(stem.id);
+          if (!stemElement) return false;
+          const stemRect = stemElement.getBoundingClientRect();
+          const centerY = stemRect.top + stemRect.height / 2;
+          return centerY >= topBoundary && centerY <= bottomBoundary;
+        })
+        .map((stem) => stem.id) ?? [],
+    );
+  };
+
+  const finishStemSelection = () => {
+    stemSelectionStartRef.current = undefined;
+    setStemSelectionBox(undefined);
+  };
+
+  const handleLayersPointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.ctrlKey) {
+      startStemSelection(event);
+      return;
+    }
+    if (event.target === event.currentTarget) setSelectedStemIds([]);
+  };
+
   const startEventDrag = (
     event: React.PointerEvent<HTMLSpanElement>,
     timelineEvent: TimelineEventProps,
@@ -680,25 +744,42 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     setDraggedEventTimes(new Map());
   };
 
-  const deleteTimelineEvents = (eventIds: number[]) => {
-    if (!timeline || eventIds.length === 0) return;
+  const deleteTimelineSelection = (
+    eventIds: number[],
+    stemIds: number[],
+  ) => {
+    if (!timeline || (eventIds.length === 0 && stemIds.length === 0)) return;
     const eventIdsToDelete = new Set(eventIds);
-    const hasEventToDelete = timeline.events.some((timelineEvent) =>
-      eventIdsToDelete.has(timelineEvent.id),
+    const stemIdsToDelete = new Set(stemIds);
+    const stemNamesToDelete = new Set(
+      timeline.stems
+        .filter((stem) => stemIdsToDelete.has(stem.id))
+        .map((stem) => stem.name),
     );
-    if (!hasEventToDelete) return;
-    setSelectedEventIds((currentIds) =>
-      currentIds.filter((eventId) => !eventIdsToDelete.has(eventId)),
-    );
+    const hasSelectionToDelete = timeline.events.some(
+      (timelineEvent) =>
+        eventIdsToDelete.has(timelineEvent.id) ||
+        stemNamesToDelete.has(timelineEvent.stem),
+    ) || timeline.stems.some((stem) => stemIdsToDelete.has(stem.id));
+    if (!hasSelectionToDelete) return;
+
+    setSelectedEventIds([]);
+    setSelectedStemIds([]);
     commitTimelineChange(
       timelineSchema.parse({
         ...timeline,
         events: timeline.events.filter(
-          (timelineEvent) => !eventIdsToDelete.has(timelineEvent.id),
+          (timelineEvent) =>
+            !eventIdsToDelete.has(timelineEvent.id) &&
+            !stemNamesToDelete.has(timelineEvent.stem),
         ),
+        stems: timeline.stems.filter((stem) => !stemIdsToDelete.has(stem.id)),
       }),
     );
   };
+
+  const deleteTimelineEvents = (eventIds: number[]) =>
+    deleteTimelineSelection(eventIds, []);
 
   const updateStemColor = (stemName: string, color: string) => {
     if (!timeline) return;
@@ -916,7 +997,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   };
 
   useEffect(() => {
-    if (selectedEventIds.length === 0) return;
+    if (selectedEventIds.length === 0 && selectedStemIds.length === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Delete" || !timeline) return;
       const target = event.target;
@@ -928,16 +1009,12 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       )
         return;
 
-      const selectedEvents = timeline.events.filter((timelineEvent) =>
-        selectedEventIds.includes(timelineEvent.id),
-      );
-      if (selectedEvents.length === 0) return;
       event.preventDefault();
-      deleteTimelineEvents(selectedEventIds);
+      deleteTimelineSelection(selectedEventIds, selectedStemIds);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedEventIds, timeline]);
+  }, [selectedEventIds, selectedStemIds, timeline]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1338,39 +1415,63 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                 </TE.RulerViewport>
               </TE.TimelineRuler>
               <TE.TimelineTracks>
-                <TE.Layers ref={layersRef} onScroll={syncLayersScroll}>
-                    {layers.map((layer) => (
-                      <TE.Layer key={layer}>
-                        {stems.find((stem) => stem.name === layer) ? (
+                <TE.Layers
+                  ref={layersRef}
+                  onScroll={syncLayersScroll}
+                  onPointerDown={handleLayersPointerDown}
+                  onPointerMove={moveStemSelection}
+                  onPointerUp={finishStemSelection}
+                  onPointerCancel={finishStemSelection}
+                >
+                  {stemSelectionBox && (
+                    <TE.SelectionBox
+                      $left={0}
+                      $top={Math.min(
+                        stemSelectionBox.startY,
+                        stemSelectionBox.currentY,
+                      )}
+                      $width={130}
+                      $height={Math.abs(
+                        stemSelectionBox.currentY - stemSelectionBox.startY,
+                      )}
+                    />
+                  )}
+                  {layers.map((layer) => {
+                    const stem = stems.find((timelineStem) => timelineStem.name === layer);
+                    return (
+                      <TE.Layer
+                        key={layer}
+                        ref={(element) => {
+                          if (stem && element) stemRefs.current.set(stem.id, element);
+                          else if (stem) stemRefs.current.delete(stem.id);
+                        }}
+                        $isSelected={stem ? selectedStemIds.includes(stem.id) : false}
+                        onPointerDown={(event) => {
+                          if (event.ctrlKey || !stem) return;
+                          if (event.target instanceof HTMLButtonElement) return;
+                          setSelectedStemIds((currentIds) =>
+                            currentIds.includes(stem.id)
+                              ? currentIds.filter((id) => id !== stem.id)
+                              : [stem.id],
+                          );
+                        }}
+                      >
+                        {stem ? (
                           <TE.LayerNameInput
                             value={
-                              editingStem?.id ===
-                              stems.find((stem) => stem.name === layer)?.id
+                              editingStem?.id === stem.id
                                 ? editingStem?.name
                                 : layer
                             }
                             aria-label={`Nome do stem ${layer}`}
                             onFocus={() => {
-                              const stem = stems.find(
-                                (timelineStem) => timelineStem.name === layer,
-                              );
-                              if (stem) {
-                                setEditingStem({ id: stem.id, name: stem.name });
-                              }
+                              setEditingStem({ id: stem.id, name: stem.name });
                             }}
                             onChange={(event) => {
-                              const stem = stems.find(
-                                (timelineStem) => timelineStem.name === layer,
-                              );
-                              if (stem) {
-                                setEditingStem({ id: stem.id, name: event.target.value });
-                              }
+                              setEditingStem({ id: stem.id, name: event.target.value });
                             }}
                             onBlur={(event) => {
-                              const stem = stems.find(
-                                (timelineStem) => timelineStem.name === layer,
-                              );
-                              if (stem) renameStem(stem.id, event.target.value);
+                              renameStem(stem.id, event.target.value);
                             }}
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
@@ -1391,6 +1492,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                             $color={stemColors.get(layer) ?? "var(--green-200)"}
                             aria-label={`Alterar cor do stem ${layer}`}
                             title="Alterar cor"
+                            onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               colorPickerRefs.setReference(event.currentTarget);
                               setColorPickerStemName(layer);
@@ -1407,8 +1509,9 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                         }}
                         $color={stemColors.get(layer) ?? "var(--green-200)"}
                       />
-                    </TE.Layer>
-                  ))}
+                      </TE.Layer>
+                    );
+                  })}
                 </TE.Layers>
                 <TE.EventsViewport
                   ref={eventsViewportRef}

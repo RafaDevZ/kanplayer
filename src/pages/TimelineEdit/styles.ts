@@ -380,6 +380,7 @@ export const Layers = styled.div`
   min-width: 130px;
   display: flex;
   flex-direction: column;
+  position: relative;
   overflow-x: hidden;
   overflow-y: auto;
   background-color: var(--black-200);
@@ -390,7 +391,7 @@ export const Layers = styled.div`
   }
 `;
 
-export const Layer = styled.div`
+export const Layer = styled.div<{ $isSelected: boolean }>`
   height: 48px;
   min-height: 48px;
   display: flex;
@@ -399,10 +400,12 @@ export const Layer = styled.div`
   padding: 0 10px;
   box-sizing: border-box;
   border-right: 1px solid var(--black-400);
-  background-color: var(--black-200);
+  background-color: ${({ $isSelected }) =>
+    $isSelected ? "var(--black-300)" : "var(--black-200)"};
   color: var(--white);
   font-size: 12px;
   text-transform: capitalize;
+  cursor: pointer;
 
   &:not(:last-child) {
     border-bottom: 1px solid var(--black-400);
