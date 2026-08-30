@@ -248,7 +248,7 @@ export const ScenarioElementCircle = styled.div<{ $color: string }>`
 
 export const TransformBox = styled.div<{ $zoom: number }>`
   position: absolute;
-  inset: 0;
+  inset: ${({ $zoom }) => -10 / $zoom}px;
   box-sizing: border-box;
   border: ${({ $zoom }) => 1 / $zoom}px dashed var(--white);
   pointer-events: none;
@@ -346,7 +346,7 @@ export const LayersPanel = styled.div`
   overflow-y: auto;
 `;
 
-export const LayerItem = styled.button<{ $isSelected: boolean }>`
+export const LayerItem = styled.button<{ $isSelected: boolean; $isDragging: boolean }>`
   width: 100%;
   min-height: 30px;
   flex-shrink: 0;
@@ -359,6 +359,7 @@ export const LayerItem = styled.button<{ $isSelected: boolean }>`
   font-size: 11px;
   text-align: left;
   cursor: grab;
+  opacity: ${({ $isDragging }) => ($isDragging ? 0.55 : 1)};
 
   &:active { cursor: grabbing; }
   &:hover { background-color: ${({ $isSelected }) => ($isSelected ? "var(--blue-300)" : "var(--black-400)")}; }
@@ -367,7 +368,7 @@ export const LayerItem = styled.button<{ $isSelected: boolean }>`
 export const RightBottom = styled.div`
   min-height: 0;
   border-radius: 4px;
-  height: 200px;
+  height: 174px;
   background-color: var(--black-300);
 `;
 

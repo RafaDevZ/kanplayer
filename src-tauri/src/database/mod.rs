@@ -107,6 +107,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
 
             CREATE TABLE IF NOT EXISTS scenario_elements (
                 id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
                 scenario_id INTEGER NOT NULL,
                 element_type TEXT NOT NULL CHECK (element_type = 'circle'),
                 x REAL NOT NULL,
@@ -194,6 +195,15 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
         .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?;
+
+    if !columns.iter().any(|column| column == "name") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar o nome dos elementos do cenário: {error}"))?;
+    }
 
     if !columns.iter().any(|column| column == "stem_response_attack_seconds") {
         connection

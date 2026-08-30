@@ -859,5 +859,8 @@ export function useMotionDnd() {
     contextValue,
     dragPreview,
     dragPreviewElementRef,
+    draggable,
+    droppable,
+    isLocalDragging,
   };
 }

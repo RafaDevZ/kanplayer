@@ -164,6 +164,8 @@ pub struct Scenario {
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioElementInput {
     pub id: String,
+    #[serde(default)]
+    pub name: String,
     #[serde(rename = "type")]
     pub element_type: String,
     pub x: f64,
@@ -186,6 +188,7 @@ pub struct ScenarioElementInput {
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioElement {
     pub id: String,
+    pub name: String,
     #[serde(rename = "type")]
     pub element_type: String,
     pub x: f64,

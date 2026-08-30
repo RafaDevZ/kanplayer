@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type DragEvent, type PointerEvent, type WheelEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { Icons } from "../../components/Icons";
 import Dropdown from "../../components/Dropdown";
 import { DropdownOption } from "../../components/Dropdown/styles";
 import { TitledInput } from "../../components/DefaultComponents";
 import Window from "../../components/Window";
+import { MotionDnd } from "../../components/MotionDnd";
+import { useMotionDnd } from "../../components/MotionDnd/useMotionDnd";
 import type {
   ScenarioElementProps,
   ScenarioElementOperationProps,
@@ -31,6 +33,9 @@ interface ElementTransformDragProps {
   startTransform: ScenarioElementProps;
   startAngle?: number;
   isAspectUnlocked: boolean;
+}
+interface LayerSwapResult {
+  draggableData: { from: unknown; to: unknown };
 }
 
 const circleBaseRadius = 20;
@@ -92,6 +97,7 @@ const applyStemResponseTransition = (
 const initialScenarioElements: ScenarioElementProps[] = [
   {
     id: "initial-circle",
+    name: "Bolinha 1",
     type: "circle",
     x: 200,
     y: 200,
@@ -103,6 +109,7 @@ const initialScenarioElements: ScenarioElementProps[] = [
   },
   {
     id: "test-circle-red",
+    name: "Bolinha 2",
     type: "circle",
     x: 300,
     y: 200,
@@ -114,6 +121,7 @@ const initialScenarioElements: ScenarioElementProps[] = [
   },
   {
     id: "test-circle-yellow",
+    name: "Bolinha 3",
     type: "circle",
     x: 400,
     y: 200,
@@ -124,6 +132,33 @@ const initialScenarioElements: ScenarioElementProps[] = [
     operations: [],
   },
 ];
+
+const getElementTypeLabel = (type: ScenarioElementProps["type"]) =>
+  type === "circle" ? "Bolinha" : String(type).charAt(0).toUpperCase() + String(type).slice(1);
+
+const ensureElementNames = (items: ScenarioElementProps[]) => {
+  const usedNames = new Set<string>();
+  const nextNumbers = new Map<string, number>();
+  return items.map((element) => {
+    const typeLabel = getElementTypeLabel(element.type);
+    const existingName = element.name?.trim();
+    if (existingName && !usedNames.has(existingName)) {
+      usedNames.add(existingName);
+      const match = existingName.match(new RegExp(`^${typeLabel} (\\d+)$`, "i"));
+      if (match) nextNumbers.set(typeLabel, Math.max(nextNumbers.get(typeLabel) ?? 0, Number(match[1])));
+      return element;
+    }
+    let nextNumber = (nextNumbers.get(typeLabel) ?? 0) + 1;
+    let name = `${typeLabel} ${nextNumber}`;
+    while (usedNames.has(name)) {
+      nextNumber += 1;
+      name = `${typeLabel} ${nextNumber}`;
+    }
+    nextNumbers.set(typeLabel, nextNumber);
+    usedNames.add(name);
+    return { ...element, name };
+  });
+};
 
 export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) {
   const { data: scenarios } = useScenarios();
@@ -145,19 +180,20 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [isWindowStemOpen, setIsWindowStemOpen] = useState(false);
   const [isWindowOperationOpen, setIsWindowOperationOpen] = useState(false);
   const [isWindowTransitionOpen, setIsWindowTransitionOpen] = useState(false);
-  const [draggingLayerId, setDraggingLayerId] = useState<string>();
+  const { draggable, dragPreview, dragPreviewElementRef, isLocalDragging } = useMotionDnd();
   const selectedTimeline = timelines?.find(
     (timeline) => timeline.id === selectedTimelineId,
   );
   const selectTimeline = (timelineId: number) => setSelectedTimelineId(timelineId);
   const selectedElement = elements.find((element) => element.id === selectedElementId);
+  const selectElement = (elementId?: string) => setSelectedElementId(elementId);
   const availableStems = selectedTimeline?.stems ?? [];
   const editingOperation = selectedElement?.operations.find(
     (operation) => operation.id === editingOperationId,
   );
   const layerElements = [...elements].reverse();
 
-  const reorderLayer = (sourceId: string, targetId: string) => {
+  const reorderLayer = (sourceId: string, targetId: string, direction: "top" | "bottom" = "top") => {
     if (sourceId === targetId) return;
     setElements((currentElements) => {
       const nextLayers = [...currentElements].reverse();
@@ -165,15 +201,16 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       const targetIndex = nextLayers.findIndex((element) => element.id === targetId);
       if (sourceIndex < 0 || targetIndex < 0) return currentElements;
       const [movedLayer] = nextLayers.splice(sourceIndex, 1);
-      nextLayers.splice(targetIndex, 0, movedLayer);
+      nextLayers.splice(direction === "bottom" ? targetIndex + 1 : targetIndex, 0, movedLayer);
       return nextLayers.reverse();
     });
   };
 
-  const handleLayerDragStart = (event: DragEvent<HTMLButtonElement>, elementId: string) => {
-    setDraggingLayerId(elementId);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", elementId);
+  const handleLayerSwap = (result: LayerSwapResult, direction: "top" | "bottom") => {
+    const sourceId = result?.draggableData?.from;
+    const targetId = result?.draggableData?.to;
+    if (typeof sourceId !== "string" || typeof targetId !== "string") return;
+    reorderLayer(sourceId, targetId, direction);
   };
 
   const updateSelectedElement = (
@@ -345,13 +382,13 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   useEffect(() => {
     if (!scenario) return;
     if (scenario.elements.length === 0) return;
-    setElements([
+    setElements(ensureElementNames([
       ...scenario.elements,
       ...initialScenarioElements.filter(
         (initialElement) =>
           !scenario.elements.some((element) => element.id === initialElement.id),
       ),
-    ]);
+    ]));
     setSelectedTimelineId(scenario.elements[0].linkedTimelineId);
   }, [scenario?.id]);
 
@@ -554,12 +591,13 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       startAngle: Math.atan2(point.y - element.y, point.x - element.x),
       isAspectUnlocked: event.shiftKey,
     };
-    setSelectedElementId(element.id);
+    selectElement(element.id);
     viewport.setPointerCapture(event.pointerId);
   };
 
   return (
     <SE.Body data-scenario-id={scenarioId}>
+      <MotionDnd ref={dragPreviewElementRef} dragPreview={dragPreview} />
       <SE.Header>
         <SE.HeaderButton type="button" onClick={onBack}>
           {Icons.returnIcon}
@@ -695,7 +733,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                   $height={scenario.height}
                   $backgroundColor={scenario.backgroundColor}
                   onPointerDown={() => {
-                    if (activeTool === "select") setSelectedElementId(undefined);
+                    if (activeTool === "select") selectElement();
                   }}
                 >
                   {elements.map((element) => (
@@ -791,20 +829,17 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 <SE.LayerItem
                   key={element.id}
                   type="button"
-                  draggable
+                  data-layer-id={element.id}
                   $isSelected={selectedElementId === element.id}
-                  onClick={() => setSelectedElementId(element.id)}
-                  onDragStart={(event) => handleLayerDragStart(event, element.id)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const sourceId = event.dataTransfer.getData("text/plain") || draggingLayerId;
-                    if (sourceId) reorderLayer(sourceId, element.id);
-                    setDraggingLayerId(undefined);
-                  }}
-                  onDragEnd={() => setDraggingLayerId(undefined)}
+                  $isDragging={isLocalDragging(element.id)}
+                  ref={draggable(element.id, {
+                    allowActionDrag: true,
+                    onClick: () => selectElement(element.id),
+                    onTopSwap: (result: LayerSwapResult) => handleLayerSwap(result, "top"),
+                    onBottomSwap: (result: LayerSwapResult) => handleLayerSwap(result, "bottom"),
+                  })}
                 >
-                  {element.type === "circle" ? "Círculo" : element.type}
+                  {element.name}
                 </SE.LayerItem>
               ))}
             </SE.LayersPanel>

@@ -100,8 +100,10 @@ export function usePlayer(
   }, [initialAudio?.path]);
 
   useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = volume;
-  }, [volume]);
+    // Não aplique o valor padrão enquanto a preferência persistida ainda
+    // está sendo carregada; isso causava volume incorreto ao trocar de tela.
+    if (isVolumeLoaded && audioRef.current) audioRef.current.volume = volume;
+  }, [activeAudio?.path, isVolumeLoaded, volume]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -177,6 +179,7 @@ export function usePlayer(
       src: activeAudio ? convertFileSrc(activeAudio.path) : undefined,
       onLoadedMetadata: (event: ChangeEvent<HTMLAudioElement>) => {
         const audio = event.currentTarget;
+        if (isVolumeLoaded) audio.volume = volume;
         setDuration(audio.duration);
         syncRef.current?.onDurationChange?.(audio.duration);
         updatePlaybackAnchor(audio.currentTime);

@@ -25,6 +25,7 @@ export const scenarioElementOperationSchema = z.object({
 
 export interface ScenarioElementProps {
   id: string;
+  name: string;
   type: "circle";
   x: number;
   y: number;
@@ -43,6 +44,7 @@ export interface ScenarioElementProps {
 
 export const scenarioElementSchema = z.object({
   id: z.string().trim().min(1).default(""),
+  name: z.string().trim().default(""),
   type: z.literal("circle").default("circle"),
   x: z.number().finite().default(200),
   y: z.number().finite().default(200),

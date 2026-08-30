@@ -164,6 +164,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const stemSelectionStartRef = useRef<number | undefined>(undefined);
   const dragPointerXRef = useRef(0);
   const playheadSecondsRef = useRef(0);
+  const isDraggingPlayheadRef = useRef(false);
   const playheadFollowEnabledRef = useRef(false);
   const playheadReferenceXRef = useRef<number | undefined>(undefined);
   const nextLocalEventIdRef = useRef(-1);
@@ -178,6 +179,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const pendingZoomAnchorRef = useRef<{ ratio: number; x: number } | null>(
     null,
   );
+  const suppressAutoScrollRef = useRef(false);
   const { refs: colorPickerRefs, floatingStyles: colorPickerStyles } =
     useFloating({
       open: colorPickerStemName !== undefined,
@@ -469,6 +471,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
 
     if (
       playheadFollowEnabledRef.current &&
+      !isDraggingPlayheadRef.current &&
+      !suppressAutoScrollRef.current &&
       viewport &&
       playheadReferenceXRef.current !== undefined
     ) {
@@ -480,6 +484,22 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         0,
         Math.min(canvasPosition - playheadReferenceXRef.current, maxScrollLeft),
       );
+    } else if (
+      !isDraggingPlayheadRef.current &&
+      !suppressAutoScrollRef.current &&
+      viewport
+    ) {
+      const visiblePosition = canvasPosition - viewport.scrollLeft;
+      if (visiblePosition < 0 || visiblePosition > viewport.clientWidth) {
+        const maxScrollLeft = Math.max(
+          0,
+          timelineContentWidth - viewport.clientWidth,
+        );
+        nextScrollLeft = Math.max(
+          0,
+          Math.min(canvasPosition, maxScrollLeft),
+        );
+      }
     }
 
     playheadSecondsRef.current = clampedTime;
@@ -507,7 +527,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const updatePlayhead = (clientX: number) => {
     const viewport = eventsViewportRef.current;
     if (!viewport) return;
-    const { left, right } = viewport.getBoundingClientRect();
+    const dragViewport = rulerViewportRef.current ?? viewport;
+    const { left, right } = dragViewport.getBoundingClientRect();
     const visibleClientX = Math.max(left, Math.min(clientX, right));
     const position = Math.max(
       0,
@@ -1201,11 +1222,15 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       dragPointerXRef.current = event.clientX;
       updatePlayhead(event.clientX);
     };
-    const onPointerUp = () => setIsDraggingPlayhead(false);
+    const onPointerUp = () => {
+      isDraggingPlayheadRef.current = false;
+      setIsDraggingPlayhead(false);
+    };
     const autoScroll = () => {
       const viewport = eventsViewportRef.current;
-      if (viewport) {
-        const { left, right } = viewport.getBoundingClientRect();
+      const dragViewport = rulerViewportRef.current ?? viewport;
+      if (viewport && dragViewport) {
+        const { left, right } = dragViewport.getBoundingClientRect();
         const pointerX = dragPointerXRef.current;
         const overflow =
           pointerX < left
@@ -1215,9 +1240,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
               : 0;
 
         if (overflow !== 0) {
-          const previousScrollLeft = viewport.scrollLeft;
+          // Enquanto o ponteiro estiver fora da viewport, avance a câmera em
+          // pequenos passos. Dentro dela, nenhum scroll é alterado.
           const speed =
             Math.sign(overflow) * Math.min(4, 1 + Math.abs(overflow) * 0.03);
+          const previousScrollLeft = viewport.scrollLeft;
           viewport.scrollLeft += speed;
           if (viewport.scrollLeft !== previousScrollLeft) {
             if (rulerViewportRef.current) {
@@ -1243,6 +1270,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
 
   const startPlayheadDrag = (event: React.PointerEvent<HTMLElement>) => {
     dragPointerXRef.current = event.clientX;
+    isDraggingPlayheadRef.current = true;
     updatePlayhead(event.clientX);
     setIsDraggingPlayhead(true);
   };
@@ -1254,9 +1282,10 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     const { left, width } = viewport.getBoundingClientRect();
     const cursorX = Math.max(0, Math.min(event.clientX - left, width));
     pendingZoomAnchorRef.current = {
-      ratio: (viewport.scrollLeft + cursorX) / viewport.scrollWidth,
+      ratio: (viewport.scrollLeft + cursorX) / timelineContentWidth,
       x: cursorX,
     };
+    suppressAutoScrollRef.current = true;
     setVisibleBars((currentBars) =>
       Math.max(
         1,
@@ -1270,14 +1299,22 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     const eventsViewport = eventsViewportRef.current;
     const rulerViewport = rulerViewportRef.current;
     if (!anchor || !eventsViewport || !rulerViewport) return;
-    const scrollLeft = anchor.ratio * eventsViewport.scrollWidth - anchor.x;
+    const maxScrollLeft = Math.max(
+      0,
+      timelineContentWidth - eventsViewport.clientWidth,
+    );
+    const scrollLeft = Math.max(
+      0,
+      Math.min(anchor.ratio * timelineContentWidth - anchor.x, maxScrollLeft),
+    );
     eventsViewport.scrollLeft = scrollLeft;
     rulerViewport.scrollLeft = eventsViewport.scrollLeft;
     pendingZoomAnchorRef.current = null;
-  }, [visibleBars]);
+  }, [timelineContentWidth, visibleBars]);
 
   useLayoutEffect(() => {
     updatePlayheadVisual(playheadSecondsRef.current);
+    suppressAutoScrollRef.current = false;
   }, [timelineContentWidth, timelineSeconds]);
 
   useLayoutEffect(() => {
