@@ -23,7 +23,7 @@ interface ScenarioEditProps {
 }
 
 type ScenarioTool = "hand" | "select";
-type TransformMode = "move" | "rotate" | `resize-${ResizeHandle}`;
+type TransformMode = "move" | "rotate" | "pivot" | `resize-${ResizeHandle}`;
 type ResizeHandle = "north-west" | "north" | "north-east" | "east" | "south-east" | "south" | "south-west" | "west";
 interface ElementTransformDragProps {
   elementId: string;
@@ -33,9 +33,14 @@ interface ElementTransformDragProps {
   startTransform: ScenarioElementProps;
   startAngle?: number;
   isAspectUnlocked: boolean;
+  pivotWorld?: { x: number; y: number };
 }
 interface LayerSwapResult {
   draggableData: { from: unknown; to: unknown };
+}
+interface SmartGuideState {
+  vertical?: number;
+  horizontal?: number;
 }
 
 const circleBaseRadius = 20;
@@ -62,6 +67,8 @@ const rotationHandles: ResizeHandle[] = [
 const stemResponseOperationLabels: Record<StemResponseOperation, string> = {
   scale: "Escala",
   rotation: "Rotação",
+  translation: "Translação",
+  wiggle: "Wiggle",
 };
 
 const stemResponseTransitionLabels: Record<StemResponseTransition, string> = {
@@ -104,6 +111,8 @@ const initialScenarioElements: ScenarioElementProps[] = [
     scaleX: 1,
     scaleY: 1,
     rotation: 0,
+    pivotX: 0.5,
+    pivotY: 0.5,
     color: "#00a8ff",
     operations: [],
   },
@@ -116,6 +125,8 @@ const initialScenarioElements: ScenarioElementProps[] = [
     scaleX: 1,
     scaleY: 1,
     rotation: 0,
+    pivotX: 0.5,
+    pivotY: 0.5,
     color: "#ff5c62",
     operations: [],
   },
@@ -128,6 +139,8 @@ const initialScenarioElements: ScenarioElementProps[] = [
     scaleX: 1,
     scaleY: 1,
     rotation: 0,
+    pivotX: 0.5,
+    pivotY: 0.5,
     color: "#ffd166",
     operations: [],
   },
@@ -160,6 +173,29 @@ const ensureElementNames = (items: ScenarioElementProps[]) => {
   });
 };
 
+// Geometria principal do elemento, derivada apenas dos seus dados de
+// transformação. Elementos decorativos internos nunca entram nos bounds.
+const getElementGeometry = (
+  element: ScenarioElementProps,
+  center = { x: element.x, y: element.y },
+) => {
+  const width = circleBaseSize * element.scaleX;
+  const height = circleBaseSize * element.scaleY;
+  const radians = (element.rotation * Math.PI) / 180;
+  const extentX = Math.abs(Math.cos(radians) * width * 0.5) + Math.abs(Math.sin(radians) * height * 0.5);
+  const extentY = Math.abs(Math.sin(radians) * width * 0.5) + Math.abs(Math.cos(radians) * height * 0.5);
+  return {
+    width,
+    height,
+    left: center.x - extentX,
+    right: center.x + extentX,
+    top: center.y - extentY,
+    bottom: center.y + extentY,
+    centerX: center.x,
+    centerY: center.y,
+  };
+};
+
 export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) {
   const { data: scenarios } = useScenarios();
   const { data: timelines } = useTimelines();
@@ -172,6 +208,9 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const [stemResponseScales, setStemResponseScales] = useState<Record<string, number>>({});
   const [stemResponseRotations, setStemResponseRotations] = useState<Record<string, number>>({});
+  const [stemResponseTranslations, setStemResponseTranslations] = useState<Record<string, { x: number; y: number; z: number }>>({});
+  const [smartGuides, setSmartGuides] = useState<SmartGuideState>({});
+  const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
   const [elements, setElements] = useState<ScenarioElementProps[]>(initialScenarioElements);
   const [selectedElementId, setSelectedElementId] = useState<string>();
   const [selectedTimelineId, setSelectedTimelineId] = useState<number>();
@@ -262,7 +301,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const setEditingOperationNumber = (
-    field: "value" | "attackSeconds" | "releaseSeconds",
+    field: "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "attackSeconds" | "releaseSeconds",
     value: string,
   ) => {
     if (value === "") {
@@ -270,7 +309,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       return;
     }
     const numberValue = Number(value);
-    if (!Number.isFinite(numberValue) || numberValue < 0) return;
+    if (!Number.isFinite(numberValue) || (numberValue < 0 && !field.startsWith("translation"))) return;
+    if (field === "repetitions" && (!Number.isInteger(numberValue) || numberValue < 1)) return;
     updateEditingOperation((operation) => ({ ...operation, [field]: numberValue }));
   };
 
@@ -278,6 +318,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     if (!selectedTimeline) {
       setStemResponseScales({});
       setStemResponseRotations({});
+      setStemResponseTranslations({});
       return;
     }
 
@@ -286,7 +327,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         const response = element.operations.reduce(
           (currentResponse, operation) => {
             const stem = selectedTimeline.stems.find((stem) => stem.id === operation.stemId);
-            if (!stem || !operation.operation || operation.value === undefined) return currentResponse;
+            if (!stem || !operation.operation) return currentResponse;
+            if ((operation.operation === "scale" || operation.operation === "rotation") && operation.value === undefined) return currentResponse;
             const matchingEvents = selectedTimeline.events.filter((timelineEvent) => timelineEvent.stem === stem.name && timelineEvent.timeSeconds <= currentTime);
             const event = matchingEvents[matchingEvents.length - 1];
             if (!event) return currentResponse;
@@ -298,11 +340,28 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               : release > 0 && elapsed <= attack + release
                 ? 1 - applyStemResponseTransition((elapsed - attack) / release, operation.transition)
                 : 0;
-            return operation.operation === "scale"
-              ? { ...currentResponse, scale: currentResponse.scale * (1 + (operation.value - 1) * intensity) }
-              : { ...currentResponse, rotation: currentResponse.rotation + operation.value * intensity };
+            if (operation.operation === "scale") {
+              return { ...currentResponse, scale: currentResponse.scale * (1 + ((operation.value ?? 1) - 1) * intensity) };
+            }
+            if (operation.operation === "rotation") {
+              return { ...currentResponse, rotation: currentResponse.rotation + (operation.value ?? 0) * intensity };
+            }
+            const isWiggle = operation.operation === "wiggle";
+            const duration = attack + release;
+            const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
+            const repetitions = Math.max(1, Math.floor(operation.repetitions ?? 1));
+            const decay = 1 - progress;
+            const oscillation = isWiggle
+              ? Math.sin(progress * repetitions * Math.PI * 2) * decay * intensity
+              : intensity;
+            return {
+              ...currentResponse,
+              translationX: currentResponse.translationX + (operation.translationX ?? 0) * oscillation,
+              translationY: currentResponse.translationY + (operation.translationY ?? 0) * oscillation,
+              translationZ: currentResponse.translationZ + (operation.translationZ ?? 0) * oscillation,
+            };
           },
-          { scale: 1, rotation: 0 },
+          { scale: 1, rotation: 0, translationX: 0, translationY: 0, translationZ: 0 },
         );
         return { id: element.id, ...response };
       });
@@ -311,6 +370,13 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     );
     setStemResponseRotations(
       Object.fromEntries(nextResponses.map((response) => [response.id, response.rotation])),
+    );
+    setStemResponseTranslations(
+      Object.fromEntries(nextResponses.map((response) => [response.id, {
+        x: response.translationX,
+        y: response.translationY,
+        z: response.translationZ,
+      }])),
     );
   };
 
@@ -345,6 +411,18 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     };
   };
 
+  // The element's x/y are its visual center. Keep this conversion centralized
+  // so the pivot drawn by the editor and the pivot used by rotation cannot
+  // diverge (especially after resize or when the element is already rotated).
+  const getElementPivotWorld = (element: ScenarioElementProps, rotation = element.rotation) => {
+    const offset = getScenarioOffset(
+      (element.pivotX - 0.5) * circleBaseSize * element.scaleX,
+      (element.pivotY - 0.5) * circleBaseSize * element.scaleY,
+      rotation,
+    );
+    return { x: element.x + offset.x, y: element.y + offset.y };
+  };
+
   const constrainElementPosition = (
     x: number,
     y: number,
@@ -361,6 +439,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       y: Math.max(extentY, Math.min(scenario.height - extentY, y)),
     };
   };
+
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -442,16 +521,85 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       }
 
       const { startTransform } = activeElementDrag;
+      if (activeElementDrag.mode === "pivot") {
+        const width = circleBaseSize * startTransform.scaleX;
+        const height = circleBaseSize * startTransform.scaleY;
+        // Derive the pivot from the pointer displacement captured at pointer-down.
+        // The displacement is converted to scenario units exactly once by
+        // getScenarioPoint, then inverse-rotated into the element's local axes.
+        // Using the absolute point relative to the element center here causes
+        // the expanded transform box (and the element translation) to be mixed
+        // into the pivot calculation, making the marker outrun the pointer.
+        const deltaX = point.x - activeElementDrag.startPoint.x;
+        const deltaY = point.y - activeElementDrag.startPoint.y;
+        const radians = (-startTransform.rotation * Math.PI) / 180;
+        const localDelta = {
+          x: deltaX * Math.cos(radians) - deltaY * Math.sin(radians),
+          y: deltaX * Math.sin(radians) + deltaY * Math.cos(radians),
+        };
+        const startPivotLocal = {
+          x: (startTransform.pivotX - 0.5) * width,
+          y: (startTransform.pivotY - 0.5) * height,
+        };
+        setElements((currentElements) => currentElements.map((element) =>
+          element.id === activeElementDrag.elementId
+            ? {
+                ...startTransform,
+                pivotX: Math.max(0, Math.min(1, (startPivotLocal.x + localDelta.x) / width + 0.5)),
+                pivotY: Math.max(0, Math.min(1, (startPivotLocal.y + localDelta.y) / height + 0.5)),
+              }
+            : element,
+        ));
+        return;
+      }
       if (activeElementDrag.mode === "move") {
         const width = circleBaseSize * startTransform.scaleX;
         const height = circleBaseSize * startTransform.scaleY;
-        const position = constrainElementPosition(
-          startTransform.x + point.x - activeElementDrag.startPoint.x,
-          startTransform.y + point.y - activeElementDrag.startPoint.y,
+        const rawPosition = {
+          x: startTransform.x + point.x - activeElementDrag.startPoint.x,
+          y: startTransform.y + point.y - activeElementDrag.startPoint.y,
+        };
+        let position = constrainElementPosition(
+          rawPosition.x,
+          rawPosition.y,
           width,
           height,
           startTransform.rotation,
         );
+        const nextGuides: SmartGuideState = {};
+        if (!event.ctrlKey && smartGuidesEnabled) {
+          const movingBounds = getElementGeometry(startTransform, position);
+          const otherElements = elements.filter((element) => element.id !== startTransform.id);
+          const tolerance = 8 / view.zoom;
+          const xCandidates = otherElements.flatMap((element) => {
+            const bounds = getElementGeometry(element);
+            return [
+              { value: bounds.left, offset: movingBounds.left - position.x },
+              { value: bounds.right, offset: movingBounds.right - position.x },
+              { value: bounds.centerX, offset: movingBounds.centerX - position.x },
+            ].map((candidate) => ({ ...candidate, distance: Math.abs((position.x + candidate.offset) - candidate.value) }));
+          }).sort((first, second) => first.distance - second.distance);
+          const yCandidates = otherElements.flatMap((element) => {
+            const bounds = getElementGeometry(element);
+            return [
+              { value: bounds.top, offset: movingBounds.top - position.y },
+              { value: bounds.bottom, offset: movingBounds.bottom - position.y },
+              { value: bounds.centerY, offset: movingBounds.centerY - position.y },
+            ].map((candidate) => ({ ...candidate, distance: Math.abs((position.y + candidate.offset) - candidate.value) }));
+          }).sort((first, second) => first.distance - second.distance);
+          const xMatch = xCandidates[0];
+          const yMatch = yCandidates[0];
+          if (xMatch && xMatch.distance <= tolerance) {
+            position = { ...position, x: position.x + (xMatch.value - (position.x + xMatch.offset)) };
+            nextGuides.vertical = xMatch.value;
+          }
+          if (yMatch && yMatch.distance <= tolerance) {
+            position = { ...position, y: position.y + (yMatch.value - (position.y + yMatch.offset)) };
+            nextGuides.horizontal = yMatch.value;
+          }
+          position = constrainElementPosition(position.x, position.y, width, height, startTransform.rotation);
+        }
+        setSmartGuides(nextGuides);
         setElements((currentElements) => currentElements.map((element) =>
           element.id === activeElementDrag.elementId ? { ...startTransform, ...position } : element,
         ));
@@ -517,6 +665,61 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               : 0;
         }
 
+        const guideTolerance = 8 / view.zoom;
+        const otherElements = elements.filter((element) => element.id !== startTransform.id);
+        const canSnapWidth = handle.includes("east") || handle.includes("west");
+        const canSnapHeight = handle.includes("north") || handle.includes("south");
+        const dimensionMatches = otherElements.flatMap((element) => [
+          { axis: "width" as const, value: getElementGeometry(element).width, distance: Math.abs(width - getElementGeometry(element).width) },
+          { axis: "height" as const, value: getElementGeometry(element).height, distance: Math.abs(height - getElementGeometry(element).height) },
+        ]).filter((match) => match.axis === "width" ? canSnapWidth : canSnapHeight)
+          .sort((first, second) => first.distance - second.distance);
+        const closestMatch = smartGuidesEnabled && !activeElementDrag.isAspectUnlocked
+          ? dimensionMatches[0]
+          : undefined;
+        const nextGuides: SmartGuideState = {};
+        if (closestMatch && closestMatch.distance <= guideTolerance) {
+          if (closestMatch.axis === "width") {
+            width = closestMatch.value;
+            if (!activeElementDrag.isAspectUnlocked) height = startHeight * (width / startWidth);
+            nextGuides.vertical = 0;
+          } else {
+            height = closestMatch.value;
+            if (!activeElementDrag.isAspectUnlocked) width = startWidth * (height / startHeight);
+            nextGuides.horizontal = 0;
+          }
+          centerX = handle.includes("west")
+            ? (startWidth - width) / 2
+            : handle.includes("east")
+              ? (width - startWidth) / 2
+              : 0;
+          centerY = handle.includes("north")
+            ? (startHeight - height) / 2
+            : handle.includes("south")
+              ? (height - startHeight) / 2
+              : 0;
+
+          const resizedCenterOffset = getScenarioOffset(centerX, centerY, startTransform.rotation);
+          const edgeOffset = closestMatch.axis === "width"
+            ? getScenarioOffset(
+                handle.includes("west") ? -width / 2 : width / 2,
+                0,
+                startTransform.rotation,
+              )
+            : getScenarioOffset(
+                0,
+                handle.includes("north") ? -height / 2 : height / 2,
+                startTransform.rotation,
+              );
+          const edgePosition = {
+            x: startTransform.x + resizedCenterOffset.x + edgeOffset.x,
+            y: startTransform.y + resizedCenterOffset.y + edgeOffset.y,
+          };
+          if (closestMatch.axis === "width") nextGuides.vertical = edgePosition.x;
+          else nextGuides.horizontal = edgePosition.y;
+        }
+        setSmartGuides(nextGuides);
+
         const offset = getScenarioOffset(centerX, centerY, startTransform.rotation);
         const position = constrainElementPosition(
           startTransform.x + offset.x,
@@ -533,11 +736,24 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       }
       if (activeElementDrag.mode === "rotate") {
         const startAngle = activeElementDrag.startAngle;
-        if (startAngle === undefined) return;
-        const angle = Math.atan2(point.y - startTransform.y, point.x - startTransform.x);
+        const pivotWorld = activeElementDrag.pivotWorld;
+        if (startAngle === undefined || !pivotWorld) return;
+        const angle = Math.atan2(point.y - pivotWorld.y, point.x - pivotWorld.x);
+        const nextRotation = startTransform.rotation + ((angle - startAngle) * 180) / Math.PI;
+        const width = circleBaseSize * startTransform.scaleX;
+        const height = circleBaseSize * startTransform.scaleY;
+        const pivotOffset = getScenarioOffset(
+          (startTransform.pivotX - 0.5) * width,
+          (startTransform.pivotY - 0.5) * height,
+          nextRotation,
+        );
+        const nextCenter = {
+          x: pivotWorld.x - pivotOffset.x,
+          y: pivotWorld.y - pivotOffset.y,
+        };
         setElements((currentElements) => currentElements.map((element) =>
           element.id === activeElementDrag.elementId
-            ? { ...startTransform, rotation: startTransform.rotation + ((angle - startAngle) * 180) / Math.PI }
+            ? { ...startTransform, ...nextCenter, rotation: nextRotation }
             : element,
         ));
       }
@@ -559,6 +775,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
     if (elementDragRef.current?.pointerId === event.pointerId) {
       elementDragRef.current = undefined;
+      setSmartGuides({});
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -588,12 +805,41 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       mode,
       startPoint: point,
       startTransform: element,
-      startAngle: Math.atan2(point.y - element.y, point.x - element.x),
+      startAngle: mode === "rotate"
+        ? (() => {
+            const pivot = getElementPivotWorld(element);
+            return Math.atan2(point.y - pivot.y, point.x - pivot.x);
+          })()
+        : undefined,
       isAspectUnlocked: event.shiftKey,
+      pivotWorld: mode === "rotate"
+        ? getElementPivotWorld(element)
+        : undefined,
     };
     selectElement(element.id);
     viewport.setPointerCapture(event.pointerId);
   };
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      const key = event.key.toLowerCase();
+      if (key === "h") {
+        setActiveTool("hand");
+        event.preventDefault();
+      } else if (key === "v") {
+        setActiveTool("select");
+        event.preventDefault();
+      } else if (key === "g") {
+        setSmartGuidesEnabled((enabled) => !enabled);
+        setSmartGuides({});
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
 
   return (
     <SE.Body data-scenario-id={scenarioId}>
@@ -622,7 +868,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           setIsWindowTransitionOpen(false);
         }}
         title="Configurar operação"
-        height="400px"
+        height="460px"
         width="360px"
       >
         {editingOperation && (
@@ -655,7 +901,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 setIsWindowTransitionOpen(false);
               }}
             >
-              {([undefined, "scale", "rotation"] as const).map((operation) => (
+              {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => (
                 <DropdownOption key={operation ?? "none"} onClick={() => { updateEditingOperation((currentOperation) => ({ ...currentOperation, operation })); setIsWindowOperationOpen(false); }}>{operation ? stemResponseOperationLabels[operation] : "Nenhuma"}</DropdownOption>
               ))}
             </Dropdown>
@@ -681,7 +927,18 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 </DropdownOption>
               ))}
             </Dropdown>
-            <TitledInput title="Valor" type="number" value={editingOperation.value ?? ""} onChange={(event) => setEditingOperationNumber("value", event.currentTarget.value)} />
+            {editingOperation.operation === "translation" || editingOperation.operation === "wiggle" ? (
+              <>
+                <TitledInput title="X" type="number" value={editingOperation.translationX ?? ""} onChange={(event) => setEditingOperationNumber("translationX", event.currentTarget.value)} />
+                <TitledInput title="Y" type="number" value={editingOperation.translationY ?? ""} onChange={(event) => setEditingOperationNumber("translationY", event.currentTarget.value)} />
+                <TitledInput title="Z" type="number" value={editingOperation.translationZ ?? ""} onChange={(event) => setEditingOperationNumber("translationZ", event.currentTarget.value)} />
+                {editingOperation.operation === "wiggle" && (
+                  <TitledInput title="Repetições" type="number" min="1" step="1" value={editingOperation.repetitions ?? 1} onChange={(event) => setEditingOperationNumber("repetitions", event.currentTarget.value)} />
+                )}
+              </>
+            ) : (
+              <TitledInput title="Valor" type="number" value={editingOperation.value ?? ""} onChange={(event) => setEditingOperationNumber("value", event.currentTarget.value)} />
+            )}
             <TitledInput title="Ataque (s)" type="number" min="0" value={editingOperation.attackSeconds ?? ""} onChange={(event) => setEditingOperationNumber("attackSeconds", event.currentTarget.value)} />
             <TitledInput title="Liberação (s)" type="number" min="0" value={editingOperation.releaseSeconds ?? ""} onChange={(event) => setEditingOperationNumber("releaseSeconds", event.currentTarget.value)} />
             <SE.OperationActions>
@@ -736,22 +993,64 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                     if (activeTool === "select") selectElement();
                   }}
                 >
-                  {elements.map((element) => (
-                    <SE.ScenarioElement
+                  {smartGuides.vertical !== undefined && (
+                    <SE.ScenarioSmartGuide
+                      $axis="width"
+                      $position={smartGuides.vertical}
+                      $width={scenario.width}
+                      $height={scenario.height}
+                    />
+                  )}
+                  {smartGuides.horizontal !== undefined && (
+                    <SE.ScenarioSmartGuide
+                      $axis="height"
+                      $position={smartGuides.horizontal}
+                      $width={scenario.width}
+                      $height={scenario.height}
+                    />
+                  )}
+                  {elements.map((element) => {
+                    const responseScale = stemResponseScales[element.id] ?? 1;
+                    const responseRotation = stemResponseRotations[element.id] ?? 0;
+                    const responseTranslation = stemResponseTranslations[element.id] ?? { x: 0, y: 0, z: 0 };
+                    // Keep the saved/base pivot fixed in scenario space. The
+                    // stem response changes the rendered geometry/angle, but
+                    // must never become a new pivot or make the pivot orbit.
+                    const renderedPivotWorld = getElementPivotWorld(element, element.rotation);
+                    const renderedWidth = circleBaseSize * element.scaleX * responseScale;
+                    const renderedHeight = circleBaseSize * element.scaleY * responseScale;
+                    // ScenarioElement is positioned by its real top-left. The
+                    // pivot then becomes the exact CSS transform-origin; no
+                    // percentage translation (and therefore no hidden center
+                    // anchor) participates in the rotation.
+                    return <SE.ScenarioElement
                       key={element.id}
-                      $x={element.x}
-                      $y={element.y}
+                      $pivotWorldX={renderedPivotWorld.x}
+                      $pivotWorldY={renderedPivotWorld.y}
+                      $pivotLocalX={element.pivotX * renderedWidth}
+                      $pivotLocalY={element.pivotY * renderedHeight}
+                      $responseTranslateX={responseTranslation.x}
+                      $responseTranslateY={responseTranslation.y}
+                      $responseTranslateZ={responseTranslation.z}
                       $scaleX={element.scaleX}
                       $scaleY={element.scaleY}
-                      $responseScale={stemResponseScales[element.id] ?? 1}
+                      $responseScale={responseScale}
                       $rotation={element.rotation}
-                      $responseRotation={stemResponseRotations[element.id] ?? 0}
+                      $responseRotation={responseRotation}
                       $isSelected={selectedElementId === element.id}
                       onPointerDown={(event) => startElementTransform(event, "move", element)}
                     >
                       <SE.ScenarioElementCircle $color={element.color} />
                       {selectedElementId === element.id && (
                         <SE.TransformBox $zoom={view.zoom}>
+                          <SE.PivotMarker
+                            type="button"
+                            aria-label="Mover pivô de rotação"
+                            $x={element.pivotX}
+                            $y={element.pivotY}
+                            $zoom={view.zoom}
+                            onPointerDown={(event) => startElementTransform(event, "pivot", element)}
+                          />
                           {resizeHandles.map((handle) => (
                             <SE.TransformHandle
                               key={handle}
@@ -778,8 +1077,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                           ))}
                         </SE.TransformBox>
                       )}
-                    </SE.ScenarioElement>
-                  ))}
+                    </SE.ScenarioElement>;
+                  })}
                 </SE.ScenarioSurface>
               </SE.ScenarioCanvas>
             )}
@@ -819,6 +1118,20 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               onClick={() => setActiveTool("hand")}
             >
               {Icons.handIcon}
+            </SE.ToolButton>
+            <SE.ToolButton
+              type="button"
+              data-tool="smart-guides"
+              aria-label="Ativar ou desativar smart guides (G)"
+              title="Smart guides (G)"
+              aria-pressed={smartGuidesEnabled}
+              $active={smartGuidesEnabled}
+              onClick={() => {
+                setSmartGuidesEnabled((enabled) => !enabled);
+                setSmartGuides({});
+              }}
+            >
+              {Icons.smartGuideIcon}
             </SE.ToolButton>
           </SE.CenterBottom>
         </SE.CenterPanel>

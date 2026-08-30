@@ -31,13 +31,22 @@ export function usePlayer(
   );
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const currentTimeRef = useRef(0);
+  const displayedSecondRef = useRef(-1);
   const [volume, setVolume] = useState(0.7);
   const [isVolumeLoaded, setIsVolumeLoaded] = useState(false);
   syncRef.current = sync;
 
-  const updateTimelineVisual = (time: number, audioDuration: number) => {
+  const updateTimelineVisual = (time: number, audioDuration: number, forceStateUpdate = false) => {
     if (!Number.isFinite(time) || !Number.isFinite(audioDuration)) return;
     syncRef.current?.onTimeChange?.(time);
+    currentTimeRef.current = time;
+    const currentSecond = Math.floor(time);
+    if (forceStateUpdate || currentSecond !== displayedSecondRef.current || time === 0) {
+      displayedSecondRef.current = currentSecond;
+      setCurrentTime(time);
+    }
 
     const timeline = timelineRef.current;
     if (!timeline) return;
@@ -117,7 +126,7 @@ export function usePlayer(
     const time = Math.max(0, Math.min(requestedTime, audio.duration));
     audio.currentTime = time;
     updatePlaybackAnchor(time);
-    updateTimelineVisual(time, audio.duration);
+    updateTimelineVisual(time, audio.duration, true);
   }, [sync?.seekTime]);
 
   useEffect(() => {
@@ -166,11 +175,13 @@ export function usePlayer(
     if (!audio) return;
     audio.currentTime = time;
     updatePlaybackAnchor(time);
-    updateTimelineVisual(time, audio.duration);
+    updateTimelineVisual(time, audio.duration, true);
   };
 
   return {
     activeAudio,
+    currentTime,
+    duration,
     audioRef,
     audioFiles,
     audioProps: {

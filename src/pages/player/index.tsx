@@ -3,6 +3,13 @@ import { Icons } from "../../components/Icons";
 import { usePlayer } from "../../hooks/player/usePlayer";
 import * as PL from "./styles";
 
+const formatTime = (seconds: number) => {
+  const safeSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+};
+
 export interface PlayerProps {
   audio?: {
     name: string;
@@ -35,6 +42,8 @@ export default function Player({
     toggleManager,
     togglePlayback,
     volume,
+    currentTime,
+    duration,
   } = usePlayer(audio, showManager, {
     seekTime,
     onDurationChange,
@@ -89,19 +98,23 @@ export default function Player({
         </PL.ListContainer>
       )}
       <PL.TimelineContainer>
-        <PL.TimelineThumbTrack>
-          <PL.TimelineThumb ref={timeline.thumbRef} />
-        </PL.TimelineThumbTrack>
-        <PL.TimelineInput
-          ref={timeline.ref}
-          $hideThumb
-          min={timeline.min}
-          max={timeline.max}
-          step={timeline.step}
-          defaultValue={0}
-          disabled={timeline.disabled}
-          onChange={timeline.onChange}
-        />
+        <PL.TimelineTimeLabel $side="left">{formatTime(currentTime)}</PL.TimelineTimeLabel>
+        <PL.TimelineSlider>
+          <PL.TimelineThumbTrack>
+            <PL.TimelineThumb ref={timeline.thumbRef} />
+          </PL.TimelineThumbTrack>
+          <PL.TimelineInput
+            ref={timeline.ref}
+            $hideThumb
+            min={timeline.min}
+            max={timeline.max}
+            step={timeline.step}
+            defaultValue={0}
+            disabled={timeline.disabled}
+            onChange={timeline.onChange}
+          />
+        </PL.TimelineSlider>
+        <PL.TimelineTimeLabel $side="right">-{formatTime(Math.max(0, duration - currentTime))}</PL.TimelineTimeLabel>
       </PL.TimelineContainer>
       <PL.PlayerContainer>
         <PL.TrackName title={activeAudio?.name}>

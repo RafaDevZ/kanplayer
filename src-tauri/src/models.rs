@@ -173,6 +173,10 @@ pub struct ScenarioElementInput {
     pub scale_x: f64,
     pub scale_y: f64,
     pub rotation: f64,
+    #[serde(default = "default_pivot")]
+    pub pivot_x: f64,
+    #[serde(default = "default_pivot")]
+    pub pivot_y: f64,
     pub color: String,
     #[serde(default)]
     pub operations: Vec<serde_json::Value>,
@@ -196,6 +200,8 @@ pub struct ScenarioElement {
     pub scale_x: f64,
     pub scale_y: f64,
     pub rotation: f64,
+    pub pivot_x: f64,
+    pub pivot_y: f64,
     pub color: String,
     pub operations: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,3 +217,5 @@ pub struct ScenarioElement {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stem_response_release_seconds: Option<f64>,
 }
+
+fn default_pivot() -> f64 { 0.5 }

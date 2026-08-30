@@ -462,6 +462,8 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   );
 
   const getPlayheadCanvasPosition = getTimelinePositionPixels;
+  const getMaxTimelineScroll = (viewport: HTMLDivElement) =>
+    Math.max(0, viewport.scrollWidth - viewport.clientWidth);
 
   const updatePlayheadVisual = (timeSeconds: number) => {
     const clampedTime = Math.max(0, Math.min(timeSeconds, timelineSeconds));
@@ -476,30 +478,11 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       viewport &&
       playheadReferenceXRef.current !== undefined
     ) {
-      const maxScrollLeft = Math.max(
-        0,
-        timelineContentWidth - viewport.clientWidth,
-      );
+      const maxScrollLeft = getMaxTimelineScroll(viewport);
       nextScrollLeft = Math.max(
         0,
         Math.min(canvasPosition - playheadReferenceXRef.current, maxScrollLeft),
       );
-    } else if (
-      !isDraggingPlayheadRef.current &&
-      !suppressAutoScrollRef.current &&
-      viewport
-    ) {
-      const visiblePosition = canvasPosition - viewport.scrollLeft;
-      if (visiblePosition < 0 || visiblePosition > viewport.clientWidth) {
-        const maxScrollLeft = Math.max(
-          0,
-          timelineContentWidth - viewport.clientWidth,
-        );
-        nextScrollLeft = Math.max(
-          0,
-          Math.min(canvasPosition, maxScrollLeft),
-        );
-      }
     }
 
     playheadSecondsRef.current = clampedTime;

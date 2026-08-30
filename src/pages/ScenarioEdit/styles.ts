@@ -203,8 +203,13 @@ export const ScenarioSurface = styled.div<{
 `;
 
 export const ScenarioElement = styled.div<{
-  $x: number;
-  $y: number;
+  $pivotWorldX: number;
+  $pivotWorldY: number;
+  $pivotLocalX: number;
+  $pivotLocalY: number;
+  $responseTranslateX: number;
+  $responseTranslateY: number;
+  $responseTranslateZ: number;
   $scaleX: number;
   $scaleY: number;
   $responseScale: number;
@@ -213,16 +218,17 @@ export const ScenarioElement = styled.div<{
   $isSelected: boolean;
 }>`
   position: absolute;
-  left: ${({ $x }) => $x}px;
-  top: ${({ $y }) => $y}px;
+  left: 0;
+  top: 0;
   width: ${({ $scaleX, $responseScale }) => 40 * $scaleX * $responseScale}px;
   height: ${({ $scaleY, $responseScale }) => 40 * $scaleY * $responseScale}px;
   border: 0;
   border-radius: 50%;
   box-sizing: border-box;
-  transform: translate3d(-50%, -50%, 0)
-    rotate(${({ $rotation, $responseRotation }) => $rotation + $responseRotation}deg);
-  transform-origin: center;
+  transform: translate3d(${({ $pivotWorldX, $responseTranslateX }) => $pivotWorldX + $responseTranslateX}px, ${({ $pivotWorldY, $responseTranslateY }) => $pivotWorldY + $responseTranslateY}px, ${({ $responseTranslateZ }) => $responseTranslateZ}px)
+    rotate(${({ $rotation, $responseRotation }) => $rotation + $responseRotation}deg)
+    translate3d(${({ $pivotLocalX }) => -$pivotLocalX}px, ${({ $pivotLocalY }) => -$pivotLocalY}px, 0);
+  transform-origin: top left;
   cursor: pointer;
 `;
 
@@ -252,6 +258,39 @@ export const TransformBox = styled.div<{ $zoom: number }>`
   box-sizing: border-box;
   border: ${({ $zoom }) => 1 / $zoom}px dashed var(--white);
   pointer-events: none;
+`;
+
+export const ScenarioSmartGuide = styled.div<{
+  $axis: "width" | "height";
+  $position: number;
+  $width: number;
+  $height: number;
+}>`
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background-color: var(--blue-100);
+  ${({ $axis, $position, $width, $height }) => $axis === "height"
+    ? `left: 0; top: ${$position}px; width: ${$width}px; height: 1px;`
+    : `left: ${$position}px; top: 0; width: 1px; height: ${$height}px;`}
+`;
+
+export const PivotMarker = styled.button<{ $x: number; $y: number; $zoom: number }>`
+  position: absolute;
+  /* TransformBox extends 10px beyond the element on every side. Offset the
+     percentage back to the element's real geometry so the visual pivot and
+     its stored local coordinates remain identical. */
+  left: ${({ $x, $zoom }) => `calc(${$x * 100}% + ${(10 - 20 * $x) / $zoom}px)`};
+  top: ${({ $y, $zoom }) => `calc(${$y * 100}% + ${(10 - 20 * $y) / $zoom}px)`};
+  width: ${({ $zoom }) => `${10 / $zoom}px`};
+  height: ${({ $zoom }) => `${10 / $zoom}px`};
+  transform: translate(-50%, -50%) rotate(45deg);
+  border: 1px solid var(--white);
+  border-radius: 1px;
+  background-color: #a855f7;
+  padding: 0;
+  pointer-events: auto;
+  cursor: move;
 `;
 
 export const TransformHandle = styled.button<{

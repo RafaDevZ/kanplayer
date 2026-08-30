@@ -92,14 +92,32 @@ export const TimelineContainer = styled.div`
   display: flex;
   padding: 0px 10px;
   box-sizing: border-box;
+  gap: 4px;
+`;
+
+export const TimelineTimeLabel = styled.span<{ $side: "left" | "right" }>`
+  width: 36px;
+  flex-shrink: 0;
+  color: var(--white);
+  font-size: 10px;
+  text-align: ${({ $side }) => $side};
+  line-height: 20px;
+  pointer-events: none;
+`;
+
+export const TimelineSlider = styled.div`
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 20px;
 `;
 
 export const TimelineThumbTrack = styled.div`
   position: absolute;
   top: 0;
-  right: 17px;
+  right: 7px;
   bottom: 0;
-  left: 17px;
+  left: 7px;
   pointer-events: none;
 `;
 

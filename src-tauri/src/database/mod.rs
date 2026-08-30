@@ -115,6 +115,8 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 scale_x REAL NOT NULL CHECK (scale_x > 0),
                 scale_y REAL NOT NULL CHECK (scale_y > 0),
                 rotation REAL NOT NULL,
+                pivot_x REAL NOT NULL DEFAULT 0.5 CHECK (pivot_x >= 0 AND pivot_x <= 1),
+                pivot_y REAL NOT NULL DEFAULT 0.5 CHECK (pivot_y >= 0 AND pivot_y <= 1),
                 color TEXT NOT NULL DEFAULT '#00a8ff',
                 operations_json TEXT NOT NULL DEFAULT '[]',
                 linked_timeline_id INTEGER,
@@ -164,7 +166,6 @@ fn ensure_timeline_columns(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("Não foi possível atualizar a estrutura do banco: {error}"))?;
     }
-
     if !columns.iter().any(|column| column == "snap") {
         connection
             .execute(
@@ -195,6 +196,20 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
         .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?;
+
+    // Pivot columns belong to scenario_elements (not timelines). Check the
+    // table schema once before each ALTER so startup is safe for both legacy
+    // databases and databases that already ran this migration.
+    for column in ["pivot_x", "pivot_y"] {
+        if !columns.iter().any(|existing| existing == column) {
+            connection
+                .execute(
+                    &format!("ALTER TABLE scenario_elements ADD COLUMN {column} REAL NOT NULL DEFAULT 0.5"),
+                    [],
+                )
+                .map_err(|error| format!("Não foi possível atualizar o pivô dos elementos do cenário: {error}"))?;
+        }
+    }
 
     if !columns.iter().any(|column| column == "name") {
         connection

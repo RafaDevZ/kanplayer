@@ -22,4 +22,5 @@ export const Icons = {
   walkArrow: <Icon icon="bi:arrow-bar-right" />,
   handIcon: <Icon icon="clarity:cursor-hand-open-line" />,
   selectIcon: <Icon icon="solar:cursor-square-linear" />,
+  smartGuideIcon: <Icon icon="hugeicons:pathfinder-minus-back" />,
 };
