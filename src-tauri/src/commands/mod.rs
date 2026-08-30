@@ -1,7 +1,7 @@
 use crate::{
     database::Database,
-    models::{AudioFile, AudioImportInput, RitraceRenderInput, RitraceRenderResult, Timeline, TimelineCreateInput, TimelineSaveInput},
-    services::{audio_import_service, music_library_service, ritrace_service, timeline_service},
+    models::{AudioFile, AudioImportInput, RitraceRenderInput, RitraceRenderResult, Scenario, ScenarioInput, Timeline, TimelineCreateInput, TimelineSaveInput},
+    services::{audio_import_service, music_library_service, ritrace_service, scenario_service, timeline_service},
 };
 use tauri::{AppHandle, State};
 
@@ -51,6 +51,30 @@ pub fn update_timeline(
 #[tauri::command]
 pub fn delete_timeline(database: State<Database>, timeline_id: i64) -> Result<(), String> {
     timeline_service::delete(&database, timeline_id)
+}
+
+#[tauri::command]
+pub fn list_scenarios(database: State<Database>) -> Result<Vec<Scenario>, String> {
+    scenario_service::list(&database)
+}
+
+#[tauri::command]
+pub fn create_scenario(database: State<Database>, scenario: ScenarioInput) -> Result<Scenario, String> {
+    scenario_service::create(&database, scenario)
+}
+
+#[tauri::command]
+pub fn update_scenario(
+    database: State<Database>,
+    scenario_id: i64,
+    scenario: ScenarioInput,
+) -> Result<Scenario, String> {
+    scenario_service::update(&database, scenario_id, scenario)
+}
+
+#[tauri::command]
+pub fn delete_scenario(database: State<Database>, scenario_id: i64) -> Result<(), String> {
+    scenario_service::delete(&database, scenario_id)
 }
 
 #[tauri::command]

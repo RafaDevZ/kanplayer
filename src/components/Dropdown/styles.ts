@@ -61,6 +61,7 @@ export const DropdownTitle = styled.div`
   justify-content: center;
   font-size: 12px;
   font-weight: 600;
+  text-transform: capitalize;
 `;
 
 export const DropdownTitleNode = styled.div`
@@ -105,6 +106,7 @@ export const DropdownOption = styled.button`
   color: var(--white);
   font-size: 11px;
   text-align: left;
+  text-transform: capitalize;
   cursor: pointer;
 
   &:hover {

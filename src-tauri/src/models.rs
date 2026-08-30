@@ -137,3 +137,74 @@ pub struct RitraceRenderResult {
     pub beat_interval_seconds: f64,
     pub events: Vec<RitraceEvent>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioInput {
+    pub name: String,
+    pub width: i64,
+    pub height: i64,
+    pub background_color: String,
+    #[serde(default)]
+    pub elements: Vec<ScenarioElementInput>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scenario {
+    pub id: i64,
+    pub name: String,
+    pub width: i64,
+    pub height: i64,
+    pub background_color: String,
+    pub elements: Vec<ScenarioElement>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioElementInput {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub element_type: String,
+    pub x: f64,
+    pub y: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub rotation: f64,
+    pub color: String,
+    #[serde(default)]
+    pub operations: Vec<serde_json::Value>,
+    pub linked_timeline_id: Option<i64>,
+    pub linked_stem_id: Option<i64>,
+    pub stem_response_operation: Option<String>,
+    pub stem_response_value: Option<f64>,
+    pub stem_response_attack_seconds: Option<f64>,
+    pub stem_response_release_seconds: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioElement {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub element_type: String,
+    pub x: f64,
+    pub y: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub rotation: f64,
+    pub color: String,
+    pub operations: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_timeline_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_stem_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_response_operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_response_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_response_attack_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_response_release_seconds: Option<f64>,
+}

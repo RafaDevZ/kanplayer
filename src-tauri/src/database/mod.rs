@@ -95,17 +95,52 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 UNIQUE (timeline_id, name)
             );
 
+            CREATE TABLE IF NOT EXISTS scenarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                width INTEGER NOT NULL CHECK (width > 0),
+                height INTEGER NOT NULL CHECK (height > 0),
+                background_color TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS scenario_elements (
+                id TEXT PRIMARY KEY,
+                scenario_id INTEGER NOT NULL,
+                element_type TEXT NOT NULL CHECK (element_type = 'circle'),
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                scale_x REAL NOT NULL CHECK (scale_x > 0),
+                scale_y REAL NOT NULL CHECK (scale_y > 0),
+                rotation REAL NOT NULL,
+                color TEXT NOT NULL DEFAULT '#00a8ff',
+                operations_json TEXT NOT NULL DEFAULT '[]',
+                linked_timeline_id INTEGER,
+                linked_stem_id INTEGER,
+                stem_response_operation TEXT CHECK (stem_response_operation IS NULL OR stem_response_operation IN ('scale', 'rotation')),
+                stem_response_value REAL CHECK (stem_response_value IS NULL OR stem_response_value >= 0),
+                stem_response_attack_seconds REAL CHECK (stem_response_attack_seconds IS NULL OR stem_response_attack_seconds >= 0),
+                stem_response_release_seconds REAL CHECK (stem_response_release_seconds IS NULL OR stem_response_release_seconds >= 0),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scenario_id) REFERENCES scenarios(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS timeline_events_by_timeline_and_time
                 ON timeline_events (timeline_id, time_seconds);
             CREATE INDEX IF NOT EXISTS timeline_events_by_timeline_and_stem
                 ON timeline_events (timeline_id, stem);
             CREATE INDEX IF NOT EXISTS timeline_stems_by_timeline
                 ON timeline_stems (timeline_id, name);
+            CREATE INDEX IF NOT EXISTS scenario_elements_by_scenario
+                ON scenario_elements (scenario_id);
             ",
         )
         .map_err(|error| format!("Não foi possível aplicar a estrutura do banco: {error}"))?;
 
     ensure_timeline_columns(connection)?;
+    ensure_scenario_element_columns(connection)?;
     ensure_default_stems(connection)
 }
 
@@ -145,6 +180,67 @@ fn ensure_timeline_columns(connection: &Connection) -> Result<(), String> {
                 [],
             )
             .map_err(|error| format!("Não foi possível atualizar a estrutura do banco: {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(scenario_elements)")
+        .map_err(|error| format!("Não foi possível verificar os elementos do cenário: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Não foi possível ler os elementos do cenário: {error}"))?;
+
+    if !columns.iter().any(|column| column == "stem_response_attack_seconds") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN stem_response_attack_seconds REAL",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar os elementos do cenário: {error}"))?;
+        connection
+            .execute(
+                "UPDATE scenario_elements SET stem_response_attack_seconds = stem_response_attack_milliseconds WHERE stem_response_attack_seconds IS NULL",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível migrar o ataque dos elementos do cenário: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "color") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN color TEXT NOT NULL DEFAULT '#00a8ff'",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar a cor dos elementos do cenário: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "operations_json") {
+        connection.execute("ALTER TABLE scenario_elements ADD COLUMN operations_json TEXT NOT NULL DEFAULT '[]'", [])
+            .map_err(|error| format!("Não foi possível atualizar as operações dos elementos do cenário: {error}"))?;
+        connection.execute(
+            "UPDATE scenario_elements SET operations_json = json_array(json_object('id', id || '-legacy-operation', 'stemId', linked_stem_id, 'operation', stem_response_operation, 'value', stem_response_value, 'attackSeconds', stem_response_attack_seconds, 'releaseSeconds', stem_response_release_seconds)) WHERE stem_response_operation IS NOT NULL",
+            [],
+        ).map_err(|error| format!("Não foi possível migrar as operações dos elementos do cenário: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "stem_response_release_seconds") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN stem_response_release_seconds REAL",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar os elementos do cenário: {error}"))?;
+        connection
+            .execute(
+                "UPDATE scenario_elements SET stem_response_release_seconds = stem_response_release_milliseconds WHERE stem_response_release_seconds IS NULL",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível migrar a liberação dos elementos do cenário: {error}"))?;
     }
 
     Ok(())

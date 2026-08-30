@@ -20,4 +20,6 @@ export const Icons = {
     <Icon icon="bi:diamond-half" style={{ height: 12, width: 12 }} />
   ),
   walkArrow: <Icon icon="bi:arrow-bar-right" />,
+  handIcon: <Icon icon="clarity:cursor-hand-open-line" />,
+  selectIcon: <Icon icon="solar:cursor-square-linear" />,
 };

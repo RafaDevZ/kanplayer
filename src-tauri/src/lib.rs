@@ -23,6 +23,10 @@ pub fn run() {
             commands::create_timeline,
             commands::update_timeline,
             commands::delete_timeline,
+            commands::list_scenarios,
+            commands::create_scenario,
+            commands::update_scenario,
+            commands::delete_scenario,
             commands::render_ritrace,
             commands::cancel_ritrace_render,
         ])
