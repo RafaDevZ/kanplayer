@@ -8,9 +8,8 @@ import {
 import { Icons } from "../../components/Icons";
 import Window from "../../components/Window";
 import { scenarioSchema, type ScenarioProps } from "../../interfaces/Scenario";
-import { useCreateScenario } from "../../queries/useScenarios";
-import { useScenarios } from "../../queries/useScenarios";
-import { useZodValidate } from "../../utils/Utils";
+import { useCreateScenario, useDeleteScenario, useScenarios } from "../../queries/useScenarios";
+import { useAlert, useZodValidate } from "../../utils/Utils";
 import * as SE from "./styles";
 import z from "zod";
 
@@ -28,6 +27,9 @@ export default function ScenarioEditor({ onOpenScenario }: ScenarioEditorProps) 
   const { mutate: createScenario, isPending: isCreatingScenario } =
     useCreateScenario(() => closeCreateWindow());
   const { data: scenarios } = useScenarios();
+  const { mutate: deleteScenario, isPending: isDeletingScenario } =
+    useDeleteScenario();
+  const { setAlert } = useAlert();
   const validate = useZodValidate(
     z.object({
       name: z.string().trim().min(1, "Digite um nome para o cenário."),
@@ -42,6 +44,19 @@ export default function ScenarioEditor({ onOpenScenario }: ScenarioEditorProps) 
     setIsCreateVisible(false);
     setIsBackgroundColorPickerOpen(false);
     setScenario(scenarioSchema.parse({}));
+  };
+
+  const removeScenario = (scenarioData: ScenarioProps) => {
+    deleteScenario(scenarioData, {
+      onError: (error) =>
+        setAlert({
+          type: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Não foi possível excluir o cenário.",
+        }),
+    });
   };
 
   return (
@@ -144,12 +159,23 @@ export default function ScenarioEditor({ onOpenScenario }: ScenarioEditorProps) 
         {scenarios?.map((scenarioData) => (
           <SE.Card
             key={scenarioData.id}
-            type="button"
             onClick={() => onOpenScenario(scenarioData.id)}
           >
             <SE.CardTitle title={scenarioData.name}>
               {scenarioData.name}
             </SE.CardTitle>
+            <SE.CardDeleteButton
+              type="button"
+              title="Excluir cenário"
+              aria-label={`Excluir ${scenarioData.name}`}
+              disabled={isDeletingScenario}
+              onClick={(event) => {
+                event.stopPropagation();
+                removeScenario(scenarioData);
+              }}
+            >
+              {Icons.deleteIcon}
+            </SE.CardDeleteButton>
           </SE.Card>
         ))}
       </SE.Workspace>

@@ -70,6 +70,8 @@ export function useUpdateTimeline(
         timeline,
       );
       queryClient.invalidateQueries({ queryKey: timelineKeys.all });
+      queryClient.invalidateQueries({ queryKey: ["stems"] });
+      queryClient.invalidateQueries({ queryKey: ["scenarios"] });
       onUpdated?.(timeline);
     },
   });

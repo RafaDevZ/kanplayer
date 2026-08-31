@@ -29,11 +29,40 @@ export function useCreateScenario(onCreated?: () => void) {
   });
 }
 
-export function useUpdateScenario() {
+export function useUpdateScenario(onUpdated?: (scenario: ScenarioProps) => void) {
   const queryClient = useQueryClient();
+  const { setAlert } = useAlert();
   return useMutation({
     mutationFn: (scenario: ScenarioProps) => scenarioService.update(scenario),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: scenarioKeys.all }),
+    onMutate: async (scenario) => {
+      await queryClient.cancelQueries({ queryKey: scenarioKeys.all });
+      const previousScenarios = queryClient.getQueryData<ScenarioProps[]>(scenarioKeys.all);
+      queryClient.setQueryData<ScenarioProps[]>(scenarioKeys.all, (currentScenarios) =>
+        currentScenarios?.map((currentScenario) =>
+          currentScenario.id === scenario.id ? scenario : currentScenario,
+        ),
+      );
+      return { previousScenarios };
+    },
+    onError: (error, _scenario, context) => {
+      if (context?.previousScenarios) {
+        queryClient.setQueryData(scenarioKeys.all, context.previousScenarios);
+      }
+      setAlert({
+        type: "error",
+        message: error instanceof Error ? error.message : "Não foi possível salvar o cenário.",
+      });
+    },
+    onSuccess: (scenario) => {
+      queryClient.setQueryData<ScenarioProps[]>(scenarioKeys.all, (currentScenarios) =>
+        currentScenarios?.map((currentScenario) =>
+          currentScenario.id === scenario.id ? scenario : currentScenario,
+        ),
+      );
+      queryClient.invalidateQueries({ queryKey: scenarioKeys.all });
+      setAlert({ type: "success", message: "Cenário salvo." });
+      onUpdated?.(scenario);
+    },
   });
 }
 

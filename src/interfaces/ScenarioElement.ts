@@ -43,6 +43,11 @@ export interface ScenarioElementProps {
   pivotX: number;
   pivotY: number;
   color: string;
+  imageData?: string;
+  /** URL local apenas para preview durante a sessão; não é persistida. */
+  imagePreviewUrl?: string;
+  imageWidth?: number;
+  imageHeight?: number;
   linkedTimelineId?: number;
   linkedStemId?: number;
   operations: ScenarioElementOperationProps[];
@@ -64,6 +69,9 @@ export const scenarioElementSchema = z.object({
   pivotX: z.number().min(0).max(1).finite().default(0.5),
   pivotY: z.number().min(0).max(1).finite().default(0.5),
   color: z.string().trim().min(1).default("#00a8ff"),
+  imageData: z.string().nullish().transform((value) => value ?? undefined),
+  imageWidth: z.number().positive().finite().nullish().transform((value) => value ?? undefined),
+  imageHeight: z.number().positive().finite().nullish().transform((value) => value ?? undefined),
   linkedTimelineId: z.number().int().positive().nullish().transform((value) => value ?? undefined),
   linkedStemId: z.number().int().nullish().transform((value) => value ?? undefined),
   stemResponseOperation: z

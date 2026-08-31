@@ -13,6 +13,7 @@ import type {
   StemResponseTransition,
 } from "../../interfaces/ScenarioElement";
 import { useScenarios, useUpdateScenario } from "../../queries/useScenarios";
+import { useStems } from "../../queries/useStems";
 import { useTimelines } from "../../queries/useTimelines";
 import Player from "../player";
 import * as SE from "./styles";
@@ -42,9 +43,22 @@ interface SmartGuideState {
   vertical?: number;
   horizontal?: number;
 }
+interface MarqueeSelection {
+  pointerId: number;
+  start: { x: number; y: number };
+  current: { x: number; y: number };
+}
 
 const circleBaseRadius = 20;
 const circleBaseSize = circleBaseRadius * 2;
+
+const getElementDimensions = (element: ScenarioElementProps) => ({
+  // scaleX/scaleY already represent the rendered size against the editor's
+  // common 40px transform unit. Natural PNG dimensions are metadata used to
+  // derive the initial aspect ratio, not a second geometry multiplier.
+  width: circleBaseSize * element.scaleX,
+  height: circleBaseSize * element.scaleY,
+});
 
 const resizeHandles: ResizeHandle[] = [
   "north-west",
@@ -101,59 +115,14 @@ const applyStemResponseTransition = (
   }
 };
 
-const initialScenarioElements: ScenarioElementProps[] = [
-  {
-    id: "initial-circle",
-    name: "Bolinha 1",
-    type: "circle",
-    x: 200,
-    y: 200,
-    scaleX: 1,
-    scaleY: 1,
-    rotation: 0,
-    pivotX: 0.5,
-    pivotY: 0.5,
-    color: "#00a8ff",
-    operations: [],
-  },
-  {
-    id: "test-circle-red",
-    name: "Bolinha 2",
-    type: "circle",
-    x: 300,
-    y: 200,
-    scaleX: 1,
-    scaleY: 1,
-    rotation: 0,
-    pivotX: 0.5,
-    pivotY: 0.5,
-    color: "#ff5c62",
-    operations: [],
-  },
-  {
-    id: "test-circle-yellow",
-    name: "Bolinha 3",
-    type: "circle",
-    x: 400,
-    y: 200,
-    scaleX: 1,
-    scaleY: 1,
-    rotation: 0,
-    pivotX: 0.5,
-    pivotY: 0.5,
-    color: "#ffd166",
-    operations: [],
-  },
-];
-
-const getElementTypeLabel = (type: ScenarioElementProps["type"]) =>
-  type === "circle" ? "Bolinha" : String(type).charAt(0).toUpperCase() + String(type).slice(1);
+const getElementTypeLabel = (element: ScenarioElementProps) =>
+  element.imageData ? "Imagem" : element.type === "circle" ? "Bolinha" : String(element.type).charAt(0).toUpperCase() + String(element.type).slice(1);
 
 const ensureElementNames = (items: ScenarioElementProps[]) => {
   const usedNames = new Set<string>();
   const nextNumbers = new Map<string, number>();
   return items.map((element) => {
-    const typeLabel = getElementTypeLabel(element.type);
+    const typeLabel = getElementTypeLabel(element);
     const existingName = element.name?.trim();
     if (existingName && !usedNames.has(existingName)) {
       usedNames.add(existingName);
@@ -179,8 +148,7 @@ const getElementGeometry = (
   element: ScenarioElementProps,
   center = { x: element.x, y: element.y },
 ) => {
-  const width = circleBaseSize * element.scaleX;
-  const height = circleBaseSize * element.scaleY;
+  const { width, height } = getElementDimensions(element);
   const radians = (element.rotation * Math.PI) / 180;
   const extentX = Math.abs(Math.cos(radians) * width * 0.5) + Math.abs(Math.sin(radians) * height * 0.5);
   const extentY = Math.abs(Math.sin(radians) * width * 0.5) + Math.abs(Math.cos(radians) * height * 0.5);
@@ -199,20 +167,29 @@ const getElementGeometry = (
 export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) {
   const { data: scenarios } = useScenarios();
   const { data: timelines } = useTimelines();
-  const { mutate: updateScenario, isPending: isSavingScenario } = useUpdateScenario();
+  const { data: globalStems } = useStems();
+  const { mutate: updateScenario, isPending: isSavingScenario } = useUpdateScenario(
+    (updatedScenario) => setElements(updatedScenario.elements),
+  );
   const scenario = scenarios?.find((scenarioData) => scenarioData.id === scenarioId);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const imagePreviewUrlsRef = useRef(new Set<string>());
   const dragRef = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
   const elementDragRef = useRef<ElementTransformDragProps | undefined>(undefined);
+  const marqueeSelectionRef = useRef<MarqueeSelection | undefined>(undefined);
   const [activeTool, setActiveTool] = useState<ScenarioTool>("select");
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const [isZoomDropdownOpen, setIsZoomDropdownOpen] = useState(false);
   const [stemResponseScales, setStemResponseScales] = useState<Record<string, number>>({});
   const [stemResponseRotations, setStemResponseRotations] = useState<Record<string, number>>({});
   const [stemResponseTranslations, setStemResponseTranslations] = useState<Record<string, { x: number; y: number; z: number }>>({});
   const [smartGuides, setSmartGuides] = useState<SmartGuideState>({});
   const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
-  const [elements, setElements] = useState<ScenarioElementProps[]>(initialScenarioElements);
+  const [elements, setElements] = useState<ScenarioElementProps[]>([]);
   const [selectedElementId, setSelectedElementId] = useState<string>();
+  const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
+  const [marqueeSelection, setMarqueeSelection] = useState<MarqueeSelection>();
   const [selectedTimelineId, setSelectedTimelineId] = useState<number>();
   const [isOperationWindowVisible, setIsOperationWindowVisible] = useState(false);
   const [editingOperationId, setEditingOperationId] = useState<string>();
@@ -225,12 +202,24 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   );
   const selectTimeline = (timelineId: number) => setSelectedTimelineId(timelineId);
   const selectedElement = elements.find((element) => element.id === selectedElementId);
-  const selectElement = (elementId?: string) => setSelectedElementId(elementId);
-  const availableStems = selectedTimeline?.stems ?? [];
+  const selectElement = (elementId?: string) => {
+    setSelectedElementId(elementId);
+    setSelectedElementIds(elementId ? [elementId] : []);
+  };
+  const toggleElementSelection = (elementId: string) => {
+    setSelectedElementIds((currentIds) => {
+      const nextIds = currentIds.includes(elementId)
+        ? currentIds.filter((id) => id !== elementId)
+        : [...currentIds, elementId];
+      setSelectedElementId(nextIds[nextIds.length - 1]);
+      return nextIds;
+    });
+  };
+  const availableStems = globalStems ?? [];
   const editingOperation = selectedElement?.operations.find(
     (operation) => operation.id === editingOperationId,
   );
-  const layerElements = [...elements].reverse();
+  const layerElements = elements;
 
   const reorderLayer = (sourceId: string, targetId: string, direction: "top" | "bottom" = "top") => {
     if (sourceId === targetId) return;
@@ -263,6 +252,18 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     );
   };
 
+  const centerSelectedElements = (axis: "horizontal" | "vertical" | "both") => {
+    if (!scenario || selectedElementIds.length === 0) return;
+    setElements((currentElements) => currentElements.map((element) => {
+      if (!selectedElementIds.includes(element.id)) return element;
+      return {
+        ...element,
+        x: axis === "vertical" ? element.x : scenario.width / 2,
+        y: axis === "horizontal" ? element.y : scenario.height / 2,
+      };
+    }));
+  };
+
   const updateEditingOperation = (
     updater: (operation: ScenarioElementOperationProps) => ScenarioElementOperationProps,
   ) => {
@@ -285,6 +286,84 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     setIsOperationWindowVisible(true);
   };
 
+  const addComponent = () => {
+    if (!scenario) return;
+    const componentId = crypto.randomUUID();
+    setElements((currentElements) => ensureElementNames([
+      ...currentElements,
+      {
+        id: componentId,
+        name: "",
+        type: "circle",
+        x: scenario.width / 2,
+        y: scenario.height / 2,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0,
+        pivotX: 0.5,
+        pivotY: 0.5,
+        color: "#00a8ff",
+        operations: [],
+      },
+    ]));
+    selectElement(componentId);
+  };
+
+  const importImageComponent = (file: File) => {
+    const isPng = file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
+    if (!isPng) return;
+    const imagePreviewUrl = URL.createObjectURL(file);
+    imagePreviewUrlsRef.current.add(imagePreviewUrl);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageData = typeof reader.result === "string" ? reader.result : undefined;
+      if (!imageData || !scenario) {
+        URL.revokeObjectURL(imagePreviewUrl);
+        imagePreviewUrlsRef.current.delete(imagePreviewUrl);
+        return;
+      }
+      const image = new Image();
+      image.onload = () => {
+        if (!image.naturalWidth || !image.naturalHeight) return;
+        const componentId = crypto.randomUUID();
+        const initialSize = Math.min(240, Math.max(40, Math.min(scenario.width, scenario.height) * 0.35));
+        const factor = initialSize / Math.max(image.naturalWidth, image.naturalHeight);
+        setElements((currentElements) => ensureElementNames([
+          ...currentElements,
+          {
+            id: componentId,
+            name: "",
+            type: "circle",
+            x: scenario.width / 2,
+            y: scenario.height / 2,
+            scaleX: (image.naturalWidth * factor) / circleBaseSize,
+            scaleY: (image.naturalHeight * factor) / circleBaseSize,
+            rotation: 0,
+            pivotX: 0.5,
+            pivotY: 0.5,
+            color: "#ffffff",
+            imageData,
+            imagePreviewUrl,
+            imageWidth: image.naturalWidth,
+            imageHeight: image.naturalHeight,
+            operations: [],
+          },
+        ]));
+        selectElement(componentId);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(imagePreviewUrl);
+        imagePreviewUrlsRef.current.delete(imagePreviewUrl);
+      };
+      image.src = imagePreviewUrl;
+    };
+    reader.onerror = () => {
+      URL.revokeObjectURL(imagePreviewUrl);
+      imagePreviewUrlsRef.current.delete(imagePreviewUrl);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const removeEditingOperation = () => {
     if (!editingOperationId) return;
     updateSelectedElement((element) => ({
@@ -293,6 +372,15 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     }));
     setIsOperationWindowVisible(false);
     setEditingOperationId(undefined);
+  };
+
+  const deleteSelectedComponent = () => {
+    if (selectedElementIds.length === 0) return;
+    setElements((currentElements) =>
+      currentElements.filter((element) => !selectedElementIds.includes(element.id)),
+    );
+    selectElement();
+    setSmartGuides({});
   };
 
   const saveScenario = () => {
@@ -326,10 +414,9 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       elements.map((element) => {
         const response = element.operations.reduce(
           (currentResponse, operation) => {
-            const stem = selectedTimeline.stems.find((stem) => stem.id === operation.stemId);
-            if (!stem || !operation.operation) return currentResponse;
+            if (!operation.stemId || !operation.operation) return currentResponse;
             if ((operation.operation === "scale" || operation.operation === "rotation") && operation.value === undefined) return currentResponse;
-            const matchingEvents = selectedTimeline.events.filter((timelineEvent) => timelineEvent.stem === stem.name && timelineEvent.timeSeconds <= currentTime);
+            const matchingEvents = selectedTimeline.events.filter((timelineEvent) => timelineEvent.stemId === operation.stemId && timelineEvent.timeSeconds <= currentTime);
             const event = matchingEvents[matchingEvents.length - 1];
             if (!event) return currentResponse;
             const elapsed = currentTime - event.timeSeconds;
@@ -416,28 +503,46 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   // diverge (especially after resize or when the element is already rotated).
   const getElementPivotWorld = (element: ScenarioElementProps, rotation = element.rotation) => {
     const offset = getScenarioOffset(
-      (element.pivotX - 0.5) * circleBaseSize * element.scaleX,
-      (element.pivotY - 0.5) * circleBaseSize * element.scaleY,
+      (element.pivotX - 0.5) * getElementDimensions(element).width,
+      (element.pivotY - 0.5) * getElementDimensions(element).height,
       rotation,
     );
     return { x: element.x + offset.x, y: element.y + offset.y };
   };
 
+  const getRenderedElementProps = (element: ScenarioElementProps) => {
+    const responseScale = stemResponseScales[element.id] ?? 1;
+    const responseRotation = stemResponseRotations[element.id] ?? 0;
+    const responseTranslation = stemResponseTranslations[element.id] ?? { x: 0, y: 0, z: 0 };
+    const renderedPivotWorld = getElementPivotWorld(element);
+    const { width: baseWidth, height: baseHeight } = getElementDimensions(element);
+    return {
+      $pivotWorldX: renderedPivotWorld.x,
+      $pivotWorldY: renderedPivotWorld.y,
+      $pivotLocalX: element.pivotX * baseWidth * responseScale,
+      $pivotLocalY: element.pivotY * baseHeight * responseScale,
+      $responseTranslateX: responseTranslation.x,
+      $responseTranslateY: responseTranslation.y,
+      $responseTranslateZ: responseTranslation.z,
+      $scaleX: element.scaleX,
+      $scaleY: element.scaleY,
+      $responseScale: responseScale,
+      $rotation: element.rotation,
+      $responseRotation: responseRotation,
+      $isSelected: selectedElementIds.includes(element.id),
+    };
+  };
+
   const constrainElementPosition = (
     x: number,
     y: number,
-    width: number,
-    height: number,
-    rotation: number,
+    _width: number,
+    _height: number,
+    _rotation: number,
   ) => {
-    if (!scenario) return { x, y };
-    const radians = (rotation * Math.PI) / 180;
-    const extentX = Math.abs(Math.cos(radians) * width * 0.5) + Math.abs(Math.sin(radians) * height * 0.5);
-    const extentY = Math.abs(Math.sin(radians) * width * 0.5) + Math.abs(Math.cos(radians) * height * 0.5);
-    return {
-      x: Math.max(extentX, Math.min(scenario.width - extentX, x)),
-      y: Math.max(extentY, Math.min(scenario.height - extentY, y)),
-    };
+    // Components may live outside the scenario. Their visual content is
+    // clipped at the surface boundary, while selection controls stay visible.
+    return { x, y };
   };
 
 
@@ -445,30 +550,60 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     const viewport = viewportRef.current;
     if (!viewport || !scenario) return;
 
-    const centerScenario = () =>
+    let hasFittedScenario = false;
+    const updateScenarioView = () => {
+      if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+
+      if (!hasFittedScenario) {
+        const padding = 16;
+        const zoom = Math.min(
+          1,
+          Math.max(
+            0.1,
+            Math.min(
+              (viewport.clientWidth - padding * 2) / scenario.width,
+              (viewport.clientHeight - padding * 2) / scenario.height,
+            ),
+          ),
+        );
+        hasFittedScenario = true;
+        setView({
+          zoom,
+          x: (viewport.clientWidth - scenario.width * zoom) / 2,
+          y: (viewport.clientHeight - scenario.height * zoom) / 2,
+        });
+        return;
+      }
+
       setView((currentView) => ({
         ...currentView,
         x: (viewport.clientWidth - scenario.width * currentView.zoom) / 2,
         y: (viewport.clientHeight - scenario.height * currentView.zoom) / 2,
       }));
+    };
 
-    centerScenario();
-    const resizeObserver = new ResizeObserver(centerScenario);
+    updateScenarioView();
+    const resizeObserver = new ResizeObserver(updateScenarioView);
     resizeObserver.observe(viewport);
     return () => resizeObserver.disconnect();
   }, [scenario?.id]);
 
+  useEffect(
+    () => () => {
+      imagePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      imagePreviewUrlsRef.current.clear();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!scenario) return;
-    if (scenario.elements.length === 0) return;
-    setElements(ensureElementNames([
-      ...scenario.elements,
-      ...initialScenarioElements.filter(
-        (initialElement) =>
-          !scenario.elements.some((element) => element.id === initialElement.id),
-      ),
-    ]));
-    setSelectedTimelineId(scenario.elements[0].linkedTimelineId);
+    const loadedElements = ensureElementNames(scenario.elements);
+    setElements([...loadedElements].sort((first, second) =>
+      first.name.localeCompare(second.name, undefined, { numeric: true }),
+    ));
+    selectElement();
+    setSelectedTimelineId(scenario.elements.find((element) => element.linkedTimelineId)?.linkedTimelineId);
   }, [scenario?.id]);
 
   const handleZoom = (event: WheelEvent<HTMLDivElement>) => {
@@ -492,13 +627,74 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     });
   };
 
+  const setScenarioZoom = (zoom: number) => {
+    const viewport = viewportRef.current;
+    if (!viewport || !scenario) return;
+    setView({
+      zoom,
+      x: (viewport.clientWidth - scenario.width * zoom) / 2,
+      y: (viewport.clientHeight - scenario.height * zoom) / 2,
+    });
+  };
+
+  const fitScenarioToViewport = () => {
+    const viewport = viewportRef.current;
+    if (!viewport || !scenario) return;
+    const padding = 16;
+    const zoom = Math.min(
+      1,
+      Math.max(
+        0.1,
+        Math.min(
+          (viewport.clientWidth - padding * 2) / scenario.width,
+          (viewport.clientHeight - padding * 2) / scenario.height,
+        ),
+      ),
+    );
+    setScenarioZoom(zoom);
+  };
+
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (activeTool === "select" && event.button === 0 && event.ctrlKey) {
+      const point = getScenarioPoint(event.clientX, event.clientY);
+      if (!point) return;
+      const selection = { pointerId: event.pointerId, start: point, current: point };
+      marqueeSelectionRef.current = selection;
+      setMarqueeSelection(selection);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (activeTool === "select" && event.button === 0) {
+      selectElement();
+      return;
+    }
     if (activeTool !== "hand" || event.button !== 0) return;
     dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const marquee = marqueeSelectionRef.current;
+    if (marquee?.pointerId === event.pointerId) {
+      const point = getScenarioPoint(event.clientX, event.clientY);
+      if (!point) return;
+      const nextSelection = { ...marquee, current: point };
+      marqueeSelectionRef.current = nextSelection;
+      setMarqueeSelection(nextSelection);
+      const left = Math.min(nextSelection.start.x, point.x);
+      const right = Math.max(nextSelection.start.x, point.x);
+      const top = Math.min(nextSelection.start.y, point.y);
+      const bottom = Math.max(nextSelection.start.y, point.y);
+      const selectedIds = elements
+        .filter((element) => {
+          const bounds = getElementGeometry(element);
+          return bounds.left >= left && bounds.right <= right && bounds.top >= top && bounds.bottom <= bottom;
+        })
+        .map((element) => element.id);
+      setSelectedElementIds(selectedIds);
+      setSelectedElementId(selectedIds[0]);
+      return;
+    }
     const storedElementDrag = elementDragRef.current;
     if (storedElementDrag && storedElementDrag.pointerId === event.pointerId && scenario) {
       const point = getScenarioPoint(event.clientX, event.clientY);
@@ -522,8 +718,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
       const { startTransform } = activeElementDrag;
       if (activeElementDrag.mode === "pivot") {
-        const width = circleBaseSize * startTransform.scaleX;
-        const height = circleBaseSize * startTransform.scaleY;
+        const { width, height } = getElementDimensions(startTransform);
         // Derive the pivot from the pointer displacement captured at pointer-down.
         // The displacement is converted to scenario units exactly once by
         // getScenarioPoint, then inverse-rotated into the element's local axes.
@@ -553,8 +748,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         return;
       }
       if (activeElementDrag.mode === "move") {
-        const width = circleBaseSize * startTransform.scaleX;
-        const height = circleBaseSize * startTransform.scaleY;
+        const { width, height } = getElementDimensions(startTransform);
         const rawPosition = {
           x: startTransform.x + point.x - activeElementDrag.startPoint.x,
           y: startTransform.y + point.y - activeElementDrag.startPoint.y,
@@ -610,8 +804,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         const currentPoint = getElementLocalPoint(point, startTransform);
         const deltaX = currentPoint.x - startPoint.x;
         const deltaY = currentPoint.y - startPoint.y;
-        const startWidth = circleBaseSize * startTransform.scaleX;
-        const startHeight = circleBaseSize * startTransform.scaleY;
+        const { width: startWidth, height: startHeight } = getElementDimensions(startTransform);
         let width = startWidth;
         let height = startHeight;
         let centerX = 0;
@@ -740,8 +933,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         if (startAngle === undefined || !pivotWorld) return;
         const angle = Math.atan2(point.y - pivotWorld.y, point.x - pivotWorld.x);
         const nextRotation = startTransform.rotation + ((angle - startAngle) * 180) / Math.PI;
-        const width = circleBaseSize * startTransform.scaleX;
-        const height = circleBaseSize * startTransform.scaleY;
+        const { width, height } = getElementDimensions(startTransform);
         const pivotOffset = getScenarioOffset(
           (startTransform.pivotX - 0.5) * width,
           (startTransform.pivotY - 0.5) * height,
@@ -773,6 +965,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+    if (marqueeSelectionRef.current?.pointerId === event.pointerId) {
+      marqueeSelectionRef.current = undefined;
+      setMarqueeSelection(undefined);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
     if (elementDragRef.current?.pointerId === event.pointerId) {
       elementDragRef.current = undefined;
       setSmartGuides({});
@@ -794,29 +994,49 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     element: ScenarioElementProps,
   ) => {
     if (activeTool !== "select" || event.button !== 0) return;
+    // Ctrl reserves the gesture for the marquee selection, including when it
+    // starts on top of an existing component.
+    if (event.ctrlKey) return;
     event.preventDefault();
     event.stopPropagation();
     const point = getScenarioPoint(event.clientX, event.clientY);
     const viewport = viewportRef.current;
     if (!point || !viewport) return;
+    const transformElement = event.altKey && mode === "move"
+      ? {
+          ...element,
+          id: crypto.randomUUID(),
+          name: "",
+          operations: element.operations.map((operation) => ({
+            ...operation,
+            id: crypto.randomUUID(),
+          })),
+        }
+      : element;
+    if (transformElement !== element) {
+      setElements((currentElements) => ensureElementNames([
+        ...currentElements,
+        transformElement,
+      ]));
+    }
     elementDragRef.current = {
-      elementId: element.id,
+      elementId: transformElement.id,
       pointerId: event.pointerId,
       mode,
       startPoint: point,
-      startTransform: element,
+      startTransform: transformElement,
       startAngle: mode === "rotate"
         ? (() => {
-            const pivot = getElementPivotWorld(element);
+            const pivot = getElementPivotWorld(transformElement);
             return Math.atan2(point.y - pivot.y, point.x - pivot.x);
           })()
         : undefined,
       isAspectUnlocked: event.shiftKey,
       pivotWorld: mode === "rotate"
-        ? getElementPivotWorld(element)
+        ? getElementPivotWorld(transformElement)
         : undefined,
     };
-    selectElement(element.id);
+    selectElement(transformElement.id);
     viewport.setPointerCapture(event.pointerId);
   };
 
@@ -835,11 +1055,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         setSmartGuidesEnabled((enabled) => !enabled);
         setSmartGuides({});
         event.preventDefault();
+      } else if (event.key === "Delete") {
+        deleteSelectedComponent();
+        event.preventDefault();
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [selectedElementIds]);
 
   return (
     <SE.Body data-scenario-id={scenarioId}>
@@ -886,7 +1109,6 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               {[undefined, ...availableStems].map((stem) => (
                 <DropdownOption key={stem?.id ?? "none"} onClick={() => {
                   updateEditingOperation((operation) => ({ ...operation, stemId: stem?.id }));
-                  updateSelectedElement((element) => ({ ...element, linkedTimelineId: stem ? selectedTimeline?.id : undefined }));
                   setIsWindowStemOpen(false);
                 }}>{stem?.name ?? "Nenhum"}</DropdownOption>
               ))}
@@ -983,16 +1205,83 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             onPointerUp={handlePointerEnd}
             onPointerCancel={handlePointerEnd}
           >
+            <SE.ScenarioToolsHeader onPointerDown={(event) => event.stopPropagation()}>
+              <SE.ScenarioToolButton
+                type="button"
+                disabled={selectedElementIds.length === 0}
+                title="Centralizar horizontalmente"
+                aria-label="Centralizar horizontalmente"
+                onClick={() => centerSelectedElements("horizontal")}
+              >
+                {Icons.alignHorizontalCenterIcon}
+              </SE.ScenarioToolButton>
+              <SE.ScenarioToolButton
+                type="button"
+                disabled={selectedElementIds.length === 0}
+                title="Centralizar verticalmente"
+                aria-label="Centralizar verticalmente"
+                onClick={() => centerSelectedElements("vertical")}
+              >
+                {Icons.alignVerticalCenterIcon}
+              </SE.ScenarioToolButton>
+              <SE.ScenarioToolButton
+                type="button"
+                disabled={selectedElementIds.length === 0}
+                title="Centralizar nos dois eixos"
+                aria-label="Centralizar nos dois eixos"
+                onClick={() => centerSelectedElements("both")}
+              >
+                {Icons.alignCenterIcon}
+              </SE.ScenarioToolButton>
+            </SE.ScenarioToolsHeader>
+            <SE.ZoomControl onPointerDown={(event) => event.stopPropagation()}>
+              <Dropdown
+                title={`${Math.round(view.zoom * 100)}%`}
+                width="82px"
+                zIndex={20}
+                isOpen={isZoomDropdownOpen}
+                onClick={() => setIsZoomDropdownOpen((isOpen) => !isOpen)}
+              >
+                {[10, 25, 50, 75, 100].map((percentage) => (
+                  <DropdownOption
+                    key={percentage}
+                    onClick={() => {
+                      setScenarioZoom(percentage / 100);
+                      setIsZoomDropdownOpen(false);
+                    }}
+                  >
+                    {percentage}%
+                  </DropdownOption>
+                ))}
+                <DropdownOption
+                  className="half"
+                  onClick={() => {
+                    fitScenarioToViewport();
+                    setIsZoomDropdownOpen(false);
+                  }}
+                >
+                  Ajustar à tela
+                </DropdownOption>
+              </Dropdown>
+            </SE.ZoomControl>
             {scenario && (
               <SE.ScenarioCanvas $x={view.x} $y={view.y} $zoom={view.zoom}>
                 <SE.ScenarioSurface
                   $width={scenario.width}
                   $height={scenario.height}
                   $backgroundColor={scenario.backgroundColor}
-                  onPointerDown={() => {
-                    if (activeTool === "select") selectElement();
+                  onPointerDown={(event) => {
+                    if (activeTool === "select" && !event.ctrlKey) selectElement();
                   }}
                 >
+                  {marqueeSelection && (
+                    <SE.ScenarioSelectionBox
+                      $left={Math.min(marqueeSelection.start.x, marqueeSelection.current.x)}
+                      $top={Math.min(marqueeSelection.start.y, marqueeSelection.current.y)}
+                      $width={Math.abs(marqueeSelection.current.x - marqueeSelection.start.x)}
+                      $height={Math.abs(marqueeSelection.current.y - marqueeSelection.start.y)}
+                    />
+                  )}
                   {smartGuides.vertical !== undefined && (
                     <SE.ScenarioSmartGuide
                       $axis="width"
@@ -1009,76 +1298,68 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                       $height={scenario.height}
                     />
                   )}
-                  {elements.map((element) => {
-                    const responseScale = stemResponseScales[element.id] ?? 1;
-                    const responseRotation = stemResponseRotations[element.id] ?? 0;
-                    const responseTranslation = stemResponseTranslations[element.id] ?? { x: 0, y: 0, z: 0 };
-                    // Keep the saved/base pivot fixed in scenario space. The
-                    // stem response changes the rendered geometry/angle, but
-                    // must never become a new pivot or make the pivot orbit.
-                    const renderedPivotWorld = getElementPivotWorld(element, element.rotation);
-                    const renderedWidth = circleBaseSize * element.scaleX * responseScale;
-                    const renderedHeight = circleBaseSize * element.scaleY * responseScale;
-                    // ScenarioElement is positioned by its real top-left. The
-                    // pivot then becomes the exact CSS transform-origin; no
-                    // percentage translation (and therefore no hidden center
-                    // anchor) participates in the rotation.
-                    return <SE.ScenarioElement
-                      key={element.id}
-                      $pivotWorldX={renderedPivotWorld.x}
-                      $pivotWorldY={renderedPivotWorld.y}
-                      $pivotLocalX={element.pivotX * renderedWidth}
-                      $pivotLocalY={element.pivotY * renderedHeight}
-                      $responseTranslateX={responseTranslation.x}
-                      $responseTranslateY={responseTranslation.y}
-                      $responseTranslateZ={responseTranslation.z}
-                      $scaleX={element.scaleX}
-                      $scaleY={element.scaleY}
-                      $responseScale={responseScale}
-                      $rotation={element.rotation}
-                      $responseRotation={responseRotation}
-                      $isSelected={selectedElementId === element.id}
-                      onPointerDown={(event) => startElementTransform(event, "move", element)}
-                    >
-                      <SE.ScenarioElementCircle $color={element.color} />
-                      {selectedElementId === element.id && (
-                        <SE.TransformBox $zoom={view.zoom}>
-                          <SE.PivotMarker
-                            type="button"
-                            aria-label="Mover pivô de rotação"
-                            $x={element.pivotX}
-                            $y={element.pivotY}
+                  <SE.ScenarioVisualLayer>
+                    {elements.map((element) => (
+                      <SE.ScenarioElement
+                        key={element.id}
+                        {...getRenderedElementProps(element)}
+                        onPointerDown={(event) => startElementTransform(event, "move", element)}
+                      >
+                        {element.imageData ? (
+                          <SE.ScenarioElementImage src={element.imagePreviewUrl ?? element.imageData} alt={element.name} draggable={false} />
+                        ) : (
+                          <SE.ScenarioElementCircle $color={element.color} />
+                        )}
+                      </SE.ScenarioElement>
+                    ))}
+                  </SE.ScenarioVisualLayer>
+                  <SE.ScenarioControlsLayer>
+                    {elements.filter((element) => selectedElementIds.includes(element.id)).map((element) => (
+                      <SE.ScenarioElementControl key={element.id} {...getRenderedElementProps(element)}>
+                        {selectedElementId !== element.id ? (
+                          <SE.SelectedElementOutline $zoom={view.zoom} />
+                        ) : (
+                          <SE.TransformBox
                             $zoom={view.zoom}
-                            onPointerDown={(event) => startElementTransform(event, "pivot", element)}
-                          />
-                          {resizeHandles.map((handle) => (
-                            <SE.TransformHandle
-                              key={handle}
+                            onPointerDown={(event) => startElementTransform(event, "move", element)}
+                          >
+                            <SE.PivotMarker
                               type="button"
-                              $type="resize"
-                              $position={handle}
+                              aria-label="Mover pivô de rotação"
+                              $x={element.pivotX}
+                              $y={element.pivotY}
                               $zoom={view.zoom}
-                              aria-label={`Redimensionar: ${handle}`}
-                              onPointerDown={(event) =>
-                                startElementTransform(event, `resize-${handle}`, element)
-                              }
+                              onPointerDown={(event) => startElementTransform(event, "pivot", element)}
                             />
-                          ))}
-                          {rotationHandles.map((handle) => (
-                            <SE.TransformHandle
-                              key={`rotate-${handle}`}
-                              type="button"
-                              $type="rotate"
-                              $position={handle}
-                              $zoom={view.zoom}
-                              aria-label={`Rotacionar: ${handle}`}
-                              onPointerDown={(event) => startElementTransform(event, "rotate", element)}
-                            />
-                          ))}
-                        </SE.TransformBox>
-                      )}
-                    </SE.ScenarioElement>;
-                  })}
+                            {resizeHandles.map((handle) => (
+                              <SE.TransformHandle
+                                key={handle}
+                                type="button"
+                                $type="resize"
+                                $position={handle}
+                                $zoom={view.zoom}
+                                aria-label={`Redimensionar: ${handle}`}
+                                onPointerDown={(event) =>
+                                  startElementTransform(event, `resize-${handle}`, element)
+                                }
+                              />
+                            ))}
+                            {rotationHandles.map((handle) => (
+                              <SE.TransformHandle
+                                key={`rotate-${handle}`}
+                                type="button"
+                                $type="rotate"
+                                $position={handle}
+                                $zoom={view.zoom}
+                                aria-label={`Rotacionar: ${handle}`}
+                                onPointerDown={(event) => startElementTransform(event, "rotate", element)}
+                              />
+                            ))}
+                          </SE.TransformBox>
+                        )}
+                      </SE.ScenarioElementControl>
+                    ))}
+                  </SE.ScenarioControlsLayer>
                 </SE.ScenarioSurface>
               </SE.ScenarioCanvas>
             )}
@@ -1138,16 +1419,37 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         <SE.RightPanel>
           <SE.RightTop>
             <SE.LayersPanel>
+              <SE.OperationListHeader>
+                Componentes
+                <span style={{ display: "flex", gap: 4 }}>
+                  <SE.OperationAddButton type="button" onClick={addComponent} aria-label="Adicionar bolinha" title="Adicionar bolinha">{Icons.addIcon}</SE.OperationAddButton>
+                  <SE.OperationAddButton type="button" onClick={() => imageInputRef.current?.click()} aria-label="Importar PNG" title="Importar PNG">{Icons.imageAddIcon}</SE.OperationAddButton>
+                </span>
+              </SE.OperationListHeader>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/png,.png"
+                hidden
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file) importImageComponent(file);
+                  event.currentTarget.value = "";
+                }}
+              />
               {layerElements.map((element) => (
                 <SE.LayerItem
                   key={element.id}
                   type="button"
                   data-layer-id={element.id}
-                  $isSelected={selectedElementId === element.id}
+                  $isSelected={selectedElementIds.includes(element.id)}
                   $isDragging={isLocalDragging(element.id)}
                   ref={draggable(element.id, {
                     allowActionDrag: true,
-                    onClick: () => selectElement(element.id),
+                    onClick: ({ event }) => {
+                      if (event.ctrlKey) toggleElementSelection(element.id);
+                      else selectElement(element.id);
+                    },
                     onTopSwap: (result: LayerSwapResult) => handleLayerSwap(result, "top"),
                     onBottomSwap: (result: LayerSwapResult) => handleLayerSwap(result, "bottom"),
                   })}
@@ -1158,19 +1460,21 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             </SE.LayersPanel>
           </SE.RightTop>
           <SE.RightBottom>
-            {selectedElement && selectedTimeline && (
-              <SE.StemBindingPanel>
-                <SE.OperationListHeader>
-                  Operações
-                  <SE.OperationAddButton type="button" onClick={addOperation}>{Icons.addIcon}</SE.OperationAddButton>
-                </SE.OperationListHeader>
-                {selectedElement.operations.map((operation) => (
-                  <SE.OperationItem key={operation.id} type="button" onClick={() => { setEditingOperationId(operation.id); setIsOperationWindowVisible(true); }}>
-                    {operation.operation ? stemResponseOperationLabels[operation.operation] : "Nenhuma"}
-                  </SE.OperationItem>
-                ))}
-              </SE.StemBindingPanel>
-            )}
+            <SE.StemBindingPanel>
+              {selectedElement && (
+                  <>
+                    <SE.OperationListHeader>
+                      Operações
+                      <SE.OperationAddButton type="button" onClick={addOperation}>{Icons.addIcon}</SE.OperationAddButton>
+                    </SE.OperationListHeader>
+                    {selectedElement.operations.map((operation) => (
+                      <SE.OperationItem key={operation.id} type="button" onClick={() => { setEditingOperationId(operation.id); setIsOperationWindowVisible(true); }}>
+                        {operation.operation ? stemResponseOperationLabels[operation.operation] : "Nenhuma"}
+                      </SE.OperationItem>
+                    ))}
+                  </>
+              )}
+            </SE.StemBindingPanel>
           </SE.RightBottom>
         </SE.RightPanel>
       </SE.Container>

@@ -165,6 +165,74 @@ export const CenterTop = styled.div<{ $isHandActive: boolean }>`
   }
 `;
 
+export const ZoomControl = styled.div`
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  z-index: 10;
+
+  .half {
+    font-size: 10px;
+  }
+
+  > div {
+    height: 26px;
+    padding: 0 4px;
+    background-color: var(--black-200);
+    font-size: 10px;
+  }
+
+  > div > div:first-child {
+    padding-right: 10px;
+    font-size: 10px;
+  }
+
+  > div > div:last-child svg {
+    width: 13px;
+    height: 13px;
+  }
+`;
+
+export const ScenarioToolsHeader = styled.div`
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 4px;
+  background-color: var(--black-200);
+`;
+
+export const ScenarioToolButton = styled.button`
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--black-300);
+  color: var(--white);
+  cursor: pointer;
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  &:hover:not(:disabled) {
+    background-color: var(--black-400);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+`;
+
 export const CenterPlayer = styled.div`
   height: 70px;
   min-height: 70px;
@@ -202,6 +270,21 @@ export const ScenarioSurface = styled.div<{
   border-radius: 4px;
 `;
 
+export const ScenarioVisualLayer = styled.div`
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+`;
+
+export const ScenarioControlsLayer = styled.div`
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+`;
+
 export const ScenarioElement = styled.div<{
   $pivotWorldX: number;
   $pivotWorldY: number;
@@ -232,6 +315,11 @@ export const ScenarioElement = styled.div<{
   cursor: pointer;
 `;
 
+export const ScenarioElementControl = styled(ScenarioElement)`
+  pointer-events: none;
+  cursor: default;
+`;
+
 export const ScenarioElementCircle = styled.div<{ $color: string }>`
   position: relative;
   width: 100%;
@@ -252,11 +340,29 @@ export const ScenarioElementCircle = styled.div<{ $color: string }>`
   }
 `;
 
+export const ScenarioElementImage = styled.img`
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+  pointer-events: none;
+`;
+
 export const TransformBox = styled.div<{ $zoom: number }>`
   position: absolute;
   inset: ${({ $zoom }) => -10 / $zoom}px;
   box-sizing: border-box;
   border: ${({ $zoom }) => 1 / $zoom}px dashed var(--white);
+  pointer-events: auto;
+  cursor: move;
+`;
+
+export const SelectedElementOutline = styled.div<{ $zoom: number }>`
+  position: absolute;
+  inset: ${({ $zoom }) => -10 / $zoom}px;
+  box-sizing: border-box;
+  border: ${({ $zoom }) => 1 / $zoom}px dashed var(--blue-100);
   pointer-events: none;
 `;
 
@@ -273,6 +379,25 @@ export const ScenarioSmartGuide = styled.div<{
   ${({ $axis, $position, $width, $height }) => $axis === "height"
     ? `left: 0; top: ${$position}px; width: ${$width}px; height: 1px;`
     : `left: ${$position}px; top: 0; width: 1px; height: ${$height}px;`}
+`;
+
+export const ScenarioSelectionBox = styled.div<{
+  $left: number;
+  $top: number;
+  $width: number;
+  $height: number;
+}>`
+  position: absolute;
+  z-index: 6;
+  left: ${({ $left }) => $left}px;
+  top: ${({ $top }) => $top}px;
+  width: ${({ $width }) => $width}px;
+  height: ${({ $height }) => $height}px;
+  box-sizing: border-box;
+  border: 1px solid var(--blue-100);
+  border-radius: 4px;
+  background-color: rgb(0 168 255 / 15%);
+  pointer-events: none;
 `;
 
 export const PivotMarker = styled.button<{ $x: number; $y: number; $zoom: number }>`

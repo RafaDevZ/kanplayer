@@ -5,6 +5,8 @@ export const Icons = {
   pauseIcon: <Icon icon="solar:pause-line-duotone" />,
   hamburguerIcon: <Icon icon="solar:hamburger-menu-broken" />,
   addIcon: <Icon icon="basil:add-outline" />,
+  deleteIcon: <Icon icon="solar:trash-bin-trash-linear" />,
+  imageAddIcon: <Icon icon="solar:gallery-add-linear" />,
   closeIcon: <Icon icon="bx:cross" style={{ rotate: "45deg" }} />,
   timelineIcon: (
     <Icon icon="fluent:timeline-24-regular" style={{ height: 18, width: 18 }} />
@@ -23,4 +25,7 @@ export const Icons = {
   handIcon: <Icon icon="clarity:cursor-hand-open-line" />,
   selectIcon: <Icon icon="solar:cursor-square-linear" />,
   smartGuideIcon: <Icon icon="hugeicons:pathfinder-minus-back" />,
+  alignHorizontalCenterIcon: <Icon icon="hugeicons:keyframe-align-horizontal" />,
+  alignVerticalCenterIcon: <Icon icon="hugeicons:keyframe-align-vertical" />,
+  alignCenterIcon: <Icon icon="hugeicons:keyframe-align-center" />,
 };

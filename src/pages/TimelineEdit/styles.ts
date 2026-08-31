@@ -103,6 +103,19 @@ export const RitraceActions = styled.div`
   }
 `;
 
+export const EmptyStemState = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 4px;
+  color: var(--white);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+
+`;
+
 export const Container = styled.div`
   flex: 1;
   display: flex;

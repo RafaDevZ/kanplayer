@@ -62,6 +62,7 @@ export const CreateBody = styled.div`
 `
 
 export const Card = styled.div`
+  position: relative;
   height: 100px;
   width: 160px;
   background-color: var(--black-300);
@@ -79,5 +80,31 @@ export const Card = styled.div`
 `
 
 export const CardTitle = styled.div`
+  max-width: 100%;
+  text-align: center;
+`
 
+export const CardDeleteButton = styled.button`
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--white);
+  cursor: pointer;
+
+  &:hover {
+    background-color: var(--red-100);
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
 `

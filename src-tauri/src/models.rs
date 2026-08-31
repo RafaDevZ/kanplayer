@@ -39,6 +39,8 @@ pub struct Track {
 #[serde(rename_all = "camelCase")]
 pub struct TimelineEventInput {
     pub stem: String,
+    #[serde(default)]
+    pub stem_id: Option<i64>,
     pub time_seconds: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
@@ -50,6 +52,7 @@ pub struct TimelineEventInput {
 pub struct TimelineEvent {
     pub id: i64,
     pub stem: String,
+    pub stem_id: i64,
     pub time_seconds: f64,
     pub confidence: Option<f64>,
     pub origin: String,
@@ -58,6 +61,15 @@ pub struct TimelineEvent {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineStemInput {
+    #[serde(default)]
+    pub id: Option<i64>,
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StemInput {
     pub name: String,
     pub color: String,
 }
@@ -179,6 +191,12 @@ pub struct ScenarioElementInput {
     pub pivot_y: f64,
     pub color: String,
     #[serde(default)]
+    pub image_data: Option<String>,
+    #[serde(default)]
+    pub image_width: Option<f64>,
+    #[serde(default)]
+    pub image_height: Option<f64>,
+    #[serde(default)]
     pub operations: Vec<serde_json::Value>,
     pub linked_timeline_id: Option<i64>,
     pub linked_stem_id: Option<i64>,
@@ -203,6 +221,12 @@ pub struct ScenarioElement {
     pub pivot_x: f64,
     pub pivot_y: f64,
     pub color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<f64>,
     pub operations: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_timeline_id: Option<i64>,

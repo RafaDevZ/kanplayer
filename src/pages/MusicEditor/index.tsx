@@ -7,10 +7,10 @@ import {
 import { Icons } from "../../components/Icons";
 import Window from "../../components/Window";
 import { timelineSchema, type TimelineProps } from "../../interfaces/Timeline";
-import { useCreateTimeline, useTimelines } from "../../queries/useTimelines";
+import { useCreateTimeline, useDeleteTimeline, useTimelines } from "../../queries/useTimelines";
 import { useAudioImport } from "../../queries/useAudioImport";
 import * as ME from "./styles";
-import { useZodValidate } from "../../utils/Utils";
+import { useAlert, useZodValidate } from "../../utils/Utils";
 import z from "zod";
 
 interface MusicEditorProps {
@@ -23,6 +23,9 @@ export default function MusicEditor({ onOpenTimeline }: MusicEditorProps) {
   );
 
   const { data: timelines } = useTimelines();
+  const { mutate: deleteTimeline, isPending: isDeletingTimeline } =
+    useDeleteTimeline();
+  const { setAlert } = useAlert();
   const { mutate: createTimeline, isPending: isCreatingTimeline } =
     useCreateTimeline();
   const { mutate: importAudio, isPending: isImportingAudio } = useAudioImport(
@@ -113,6 +116,19 @@ export default function MusicEditor({ onOpenTimeline }: MusicEditorProps) {
             key={timeline.id}
             timelineData={timeline}
             onOpen={() => onOpenTimeline(timeline.track.path)}
+            onDelete={() =>
+              deleteTimeline(timeline, {
+                onError: (error) =>
+                  setAlert({
+                    type: "error",
+                    message:
+                      error instanceof Error
+                        ? error.message
+                        : "Não foi possível excluir a timeline.",
+                  }),
+              })
+            }
+            isDeleting={isDeletingTimeline}
           />
         ))}
       </ME.Container>
@@ -123,12 +139,26 @@ export default function MusicEditor({ onOpenTimeline }: MusicEditorProps) {
 interface TimelineCardProps {
   timelineData: TimelineProps;
   onOpen: () => void;
+  onDelete: () => void;
+  isDeleting: boolean;
 }
 
-function TimelineCard({ timelineData, onOpen }: TimelineCardProps) {
+function TimelineCard({ timelineData, onOpen, onDelete, isDeleting }: TimelineCardProps) {
   return (
     <ME.Card onClick={onOpen}>
       <ME.CardTitle>{timelineData.name}</ME.CardTitle>
+      <ME.CardDeleteButton
+        type="button"
+        title="Excluir timeline"
+        aria-label={`Excluir ${timelineData.name}`}
+        disabled={isDeleting}
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+      >
+        {Icons.deleteIcon}
+      </ME.CardDeleteButton>
     </ME.Card>
   );
 }

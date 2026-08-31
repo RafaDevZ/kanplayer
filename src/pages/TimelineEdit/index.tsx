@@ -12,6 +12,7 @@ import {
 } from "../../components/DefaultComponents";
 import Window from "../../components/Window";
 import { useTimeline, useUpdateTimeline } from "../../queries/useTimelines";
+import { useStems } from "../../queries/useStems";
 import { useRitraceCancel, useRitraceRender } from "../../queries/useRitrace";
 import {
   ritraceProgressSchema,
@@ -26,7 +27,6 @@ import {
 } from "../../interfaces/TimelineEvent";
 import { timelineSchema, type TimelineProps } from "../../interfaces/Timeline";
 import {
-  createTimelineStem,
   defaultTimelineStems,
 } from "../../interfaces/TimelineStem";
 
@@ -99,10 +99,14 @@ interface TimelineEditProps {
 
 export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const { data: savedTimeline, isLoading } = useTimeline(trackPath);
+  const { data: globalStems } = useStems();
   const [timeline, setTimeline] = useState<TimelineProps>();
   const [snap, setSnap] = useState<SnapValue>("1/16");
   const [isSnapOpen, setIsSnapOpen] = useState(false);
   const [isRitraceWindowVisible, setIsRitraceWindowVisible] = useState(false);
+  const [isAddStemWindowVisible, setIsAddStemWindowVisible] = useState(false);
+  const [isAddStemDropdownOpen, setIsAddStemDropdownOpen] = useState(false);
+  const [stemToAddId, setStemToAddId] = useState<number>();
   const [ritraceConfidence, setRitraceConfidence] = useState({
     kick: 30,
     snare: 25,
@@ -168,7 +172,6 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   const playheadFollowEnabledRef = useRef(false);
   const playheadReferenceXRef = useRef<number | undefined>(undefined);
   const nextLocalEventIdRef = useRef(-1);
-  const nextLocalStemIdRef = useRef(-1000);
   const copiedEventsRef = useRef<TimelineEventProps[]>([]);
   const lastPasteStartSecondsRef = useRef<number | undefined>(undefined);
   const ritraceStartedAtRef = useRef<number | undefined>(undefined);
@@ -232,10 +235,33 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         bpm: result.bpm,
         firstBeatSeconds: result.firstBeatSeconds,
         beatIntervalSeconds: result.beatIntervalSeconds,
-        stems: defaultTimelineStems,
+        stems: Array.from(
+          new Map(
+            [
+              ...timeline.stems,
+              ...(globalStems ?? []).filter((stem) =>
+                result.events.some(
+                  (event) =>
+                    stem.name.toLocaleLowerCase() ===
+                      event.stem.toLocaleLowerCase() ||
+                    (event.stem.toLocaleLowerCase() === "hihat" &&
+                      stem.name.toLocaleLowerCase() === "hat"),
+                ),
+              ),
+            ].map((stem) => [stem.id, stem]),
+          ).values(),
+        ),
         events: result.events.map((event) => ({
           ...event,
           id: 0,
+          stem: [...timeline.stems, ...(globalStems ?? [])].find((stem) =>
+            stem.name.toLocaleLowerCase() === event.stem.toLocaleLowerCase() ||
+            (event.stem.toLocaleLowerCase() === "hihat" && stem.name.toLocaleLowerCase() === "hat"),
+          )?.name ?? event.stem,
+          stemId: [...timeline.stems, ...(globalStems ?? [])].find((stem) =>
+            stem.name.toLocaleLowerCase() === event.stem.toLocaleLowerCase() ||
+            (event.stem.toLocaleLowerCase() === "hihat" && stem.name.toLocaleLowerCase() === "hat"),
+          )?.id ?? 0,
         })),
       });
       await updateTimelineAsync(importedTimeline);
@@ -298,7 +324,6 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     setFirstBeatInputValue("");
     previousPlayerTimeRef.current = undefined;
     nextLocalEventIdRef.current = -1;
-    nextLocalStemIdRef.current = -1000;
     copiedEventsRef.current = [];
     lastPasteStartSecondsRef.current = undefined;
     flashTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
@@ -342,12 +367,13 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     lastPasteStartSecondsRef.current = undefined;
     nextLocalEventIdRef.current =
       Math.min(0, ...savedTimeline.events.map((event) => event.id)) - 1;
-    nextLocalStemIdRef.current =
-      Math.min(0, ...savedTimeline.stems.map((stem) => stem.id)) - 1;
   }, [savedTimeline?.id]);
   const events = timeline?.events ?? [];
   const stems = timeline?.stems ?? defaultTimelineStems;
-  const stemColors = new Map(stems.map((stem) => [stem.name, stem.color]));
+  const stemColors = useMemo(
+    () => new Map(stems.map((stem) => [stem.name, stem.color] as const)),
+    [stems],
+  );
   const eventsByTime = useMemo(
     () =>
       [...events].sort(
@@ -355,9 +381,19 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
       ),
     [events],
   );
-  const layers = [
-    ...new Set([...stems.map((stem) => stem.name), ...events.map((event) => event.stem)]),
-  ];
+  const eventsByStem = useMemo(() => {
+    const grouped = new Map<string, TimelineEventProps[]>();
+    for (const event of events) {
+      const stemEvents = grouped.get(event.stem);
+      if (stemEvents) stemEvents.push(event);
+      else grouped.set(event.stem, [event]);
+    }
+    return grouped;
+  }, [events]);
+  const layers = useMemo(
+    () => [...new Set([...stems.map((stem) => stem.name), ...eventsByStem.keys()])],
+    [stems, eventsByStem],
+  );
   const selectedStem = stems.find((stem) => stem.name === colorPickerStemName);
   const currentBpm =
     timeline?.bpm ??
@@ -618,6 +654,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     const timelineEvent = timelineEventSchema.parse({
       id: nextLocalEventIdRef.current,
       stem,
+      stemId: timeline?.stems.find((timelineStem) => timelineStem.name === stem)?.id ?? 0,
       timeSeconds,
       origin: "manual",
     });
@@ -882,15 +919,10 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     if (!timeline || (eventIds.length === 0 && stemIds.length === 0)) return;
     const eventIdsToDelete = new Set(eventIds);
     const stemIdsToDelete = new Set(stemIds);
-    const stemNamesToDelete = new Set(
-      timeline.stems
-        .filter((stem) => stemIdsToDelete.has(stem.id))
-        .map((stem) => stem.name),
-    );
     const hasSelectionToDelete = timeline.events.some(
       (timelineEvent) =>
         eventIdsToDelete.has(timelineEvent.id) ||
-        stemNamesToDelete.has(timelineEvent.stem),
+        stemIdsToDelete.has(timelineEvent.stemId),
     ) || timeline.stems.some((stem) => stemIdsToDelete.has(stem.id));
     if (!hasSelectionToDelete) return;
 
@@ -902,7 +934,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
         events: timeline.events.filter(
           (timelineEvent) =>
             !eventIdsToDelete.has(timelineEvent.id) &&
-            !stemNamesToDelete.has(timelineEvent.stem),
+            !stemIdsToDelete.has(timelineEvent.stemId),
         ),
         stems: timeline.stems.filter((stem) => !stemIdsToDelete.has(stem.id)),
       }),
@@ -990,29 +1022,27 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
     );
   };
 
-  const addStem = () => {
-    if (!timeline) return;
-    let stemNumber = timeline.stems.length + 1;
-    let name = `Stem ${stemNumber}`;
-    const existingNames = new Set(
-      timeline.stems.map((stem) => stem.name.toLocaleLowerCase()),
-    );
-    while (existingNames.has(name.toLocaleLowerCase())) {
-      stemNumber += 1;
-      name = `Stem ${stemNumber}`;
-    }
+  const availableGlobalStems = (globalStems ?? []).filter(
+    (globalStem) => !timeline?.stems.some((stem) => stem.id === globalStem.id),
+  );
 
-    const newStem = {
-      ...createTimelineStem(name, timeline.stems),
-      id: nextLocalStemIdRef.current,
-    };
-    nextLocalStemIdRef.current -= 1;
-    commitTimelineChange(
-      timelineSchema.parse({
-        ...timeline,
-        stems: [...timeline.stems, newStem],
-      }),
-    );
+  const openAddStemWindow = () => {
+    setStemToAddId(availableGlobalStems[0]?.id);
+    setIsAddStemDropdownOpen(false);
+    setIsAddStemWindowVisible(true);
+  };
+
+  const addSelectedStemToTimeline = () => {
+    if (!timeline || !stemToAddId) return;
+    const stem = availableGlobalStems.find((globalStem) => globalStem.id === stemToAddId);
+    if (!stem) return;
+    commitTimelineChange(timelineSchema.parse({
+      ...timeline,
+      stems: [...timeline.stems, stem],
+    }));
+    setIsAddStemWindowVisible(false);
+    setIsAddStemDropdownOpen(false);
+    setStemToAddId(undefined);
   };
 
   useEffect(() => {
@@ -1426,6 +1456,59 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
   return (
     <>
       <Window
+        isVisible={isAddStemWindowVisible}
+        onClose={() => {
+          setIsAddStemWindowVisible(false);
+          setIsAddStemDropdownOpen(false);
+          setStemToAddId(undefined);
+        }}
+        title="Adicionar stem à timeline"
+        width="360px"
+        height="230px"
+        icon={Icons.addIcon}
+      >
+        <TE.RitraceWindowBody>
+          <TE.RitraceForm>
+            {availableGlobalStems.length > 0 ? (
+              <Dropdown
+                title={
+                  availableGlobalStems.find((stem) => stem.id === stemToAddId)
+                    ?.name ?? "Selecione um stem"
+                }
+                width="100%"
+                isOpen={isAddStemDropdownOpen}
+                onClick={() => setIsAddStemDropdownOpen((open) => !open)}
+              >
+                {availableGlobalStems.map((stem) => (
+                  <DropdownOption
+                    key={stem.id}
+                    onClick={() => {
+                      setStemToAddId(stem.id);
+                      setIsAddStemDropdownOpen(false);
+                    }}
+                  >
+                    {stem.name}
+                  </DropdownOption>
+                ))}
+              </Dropdown>
+            ) : (
+              <TE.EmptyStemState>
+                Todos os stems globais já estão vinculados a esta timeline.
+              </TE.EmptyStemState>
+            )}
+          </TE.RitraceForm>
+          <TE.RitraceActions>
+            <Button
+              type="button"
+              disabled={!stemToAddId || availableGlobalStems.length === 0}
+              onClick={addSelectedStemToTimeline}
+            >
+              Salvar
+            </Button>
+          </TE.RitraceActions>
+        </TE.RitraceWindowBody>
+      </Window>
+      <Window
         isVisible={isRitraceWindowVisible}
         disableClose={isRenderingRitrace}
         onClose={closeRitraceWindow}
@@ -1595,7 +1678,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                 type="button"
                 title="Adicionar stem"
                 aria-label="Adicionar stem"
-                onClick={addStem}
+                onClick={openAddStemWindow}
               >
                 {Icons.addIcon}
               </TE.AddStemButton>
@@ -1833,9 +1916,7 @@ export default function TimelineEdit({ trackPath, onBack }: TimelineEditProps) {
                             }}
                           />
                         )}
-                        {events
-                          .filter((event) => event.stem === layer)
-                          .map((event) => (
+                        {(eventsByStem.get(layer) ?? []).map((event) => (
                             <TE.EventMarker
                               key={event.id}
                               ref={(element) => {

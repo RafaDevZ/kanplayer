@@ -88,6 +88,13 @@ function App() {
         >
           Cenários
         </NavigationButton>
+        <NavigationButton
+          type="button"
+          $active={location.pathname.startsWith("/stems")}
+          onClick={() => navigate("/stems")}
+        >
+          Stems
+        </NavigationButton>
       </NavigationHeader>
       <PageArea>
         <AppRoutes />

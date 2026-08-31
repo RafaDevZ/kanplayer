@@ -3,6 +3,7 @@ import MusicEditor from "../pages/MusicEditor";
 import ScenarioEditor from "../pages/ScenarioEditor";
 import ScenarioEdit from "../pages/ScenarioEdit";
 import TimelineEdit from "../pages/TimelineEdit";
+import StemEditor from "../pages/StemEditor";
 
 function TimelineEditRoute() {
   const navigate = useNavigate();
@@ -41,6 +42,7 @@ export default function AppRoutes() {
         }
       />
       <Route path="/timelines/:trackPath" element={<TimelineEditRoute />} />
+      <Route path="/stems" element={<StemEditor />} />
       <Route
         path="/scenarios"
         element={

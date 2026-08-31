@@ -6,6 +6,7 @@ use crate::{
     },
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::collections::HashSet;
 
 pub fn list(database: &Database) -> Result<Vec<Timeline>, String> {
     let connection = database.connect()?;
@@ -43,25 +44,6 @@ pub fn create(database: &Database, input: TimelineCreateInput) -> Result<Timelin
             params![track.id, input.name, input.bpm],
         )
         .map_err(database_error)?;
-    let timeline_id = transaction.last_insert_rowid();
-    replace_stems(
-        &transaction,
-        timeline_id,
-        &[
-            TimelineStemInput {
-                name: "kick".to_string(),
-                color: "#e94949".to_string(),
-            },
-            TimelineStemInput {
-                name: "snare".to_string(),
-                color: "#4ba7f0".to_string(),
-            },
-            TimelineStemInput {
-                name: "hihat".to_string(),
-                color: "#f5c545".to_string(),
-            },
-        ],
-    )?;
     transaction.commit().map_err(database_error)?;
     get_for_track(database, &track.path)?
         .ok_or_else(|| "A timeline criada não foi encontrada.".to_string())
@@ -82,29 +64,10 @@ pub fn update(
 
     transaction.execute("UPDATE tracks SET name = ?1, duration_seconds = ?2, audio_sha256 = ?3, updated_at = CURRENT_TIMESTAMP WHERE path = ?4", params![input.track.name, input.track.duration_seconds, input.track.audio_sha256, input.track.path]).map_err(database_error)?;
     transaction.execute("UPDATE timelines SET name = ?1, bpm = ?2, first_beat_seconds = ?3, beat_interval_seconds = ?4, snap = ?5, follow_playhead = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?7", params![input.name, input.bpm, input.first_beat_seconds, input.beat_interval_seconds, input.snap, input.follow_playhead, timeline_id]).map_err(database_error)?;
-    replace_stems(&transaction, timeline_id, &input.stems)?;
+    sync_timeline_stems(&transaction, timeline_id, &input.stems)?;
     replace_events(&transaction, timeline_id, &input.events)?;
     transaction.commit().map_err(database_error)?;
     get_by_id(&database.connect()?, timeline_id)
-}
-
-fn replace_stems(
-    transaction: &Transaction,
-    timeline_id: i64,
-    stems: &[TimelineStemInput],
-) -> Result<(), String> {
-    transaction
-        .execute("DELETE FROM timeline_stems WHERE timeline_id = ?1", [timeline_id])
-        .map_err(database_error)?;
-    for stem in stems {
-        transaction
-            .execute(
-                "INSERT INTO timeline_stems (timeline_id, name, color) VALUES (?1, ?2, ?3)",
-                params![timeline_id, stem.name, stem.color],
-            )
-            .map_err(database_error)?;
-    }
-    Ok(())
 }
 
 pub fn delete(database: &Database, timeline_id: i64) -> Result<(), String> {
@@ -150,7 +113,55 @@ fn replace_events(
         )
         .map_err(database_error)?;
     for event in events {
-        transaction.execute("INSERT INTO timeline_events (timeline_id, stem, time_seconds, confidence, origin) VALUES (?1, ?2, ?3, ?4, ?5)", params![timeline_id, event.stem, event.time_seconds, event.confidence, event.origin.as_deref().unwrap_or("manual")]).map_err(database_error)?;
+        let stem_id = match event.stem_id.filter(|id| *id > 0) {
+            Some(id) => id,
+            None => transaction.query_row(
+                "SELECT id FROM stems WHERE lower(trim(name)) = lower(trim(?1))",
+                [&event.stem],
+                |row| row.get(0),
+            ).map_err(database_error)?,
+        };
+        let stem_name = transaction.query_row("SELECT name FROM stems WHERE id = ?1", [stem_id], |row| row.get::<_, String>(0)).map_err(database_error)?;
+        transaction.execute("INSERT INTO timeline_events (timeline_id, stem, stem_id, time_seconds, confidence, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![timeline_id, stem_name, stem_id, event.time_seconds, event.confidence, event.origin.as_deref().unwrap_or("manual")]).map_err(database_error)?;
+    }
+    Ok(())
+}
+
+fn sync_timeline_stems(
+    transaction: &Transaction,
+    timeline_id: i64,
+    stems: &[TimelineStemInput],
+) -> Result<(), String> {
+    let desired_ids = stems.iter().map(|stem| stem.id.unwrap_or(0)).collect::<HashSet<_>>();
+    if desired_ids.iter().any(|id| *id <= 0) {
+        return Err("A timeline só pode vincular stems globais existentes.".to_string());
+    }
+    let current_ids = {
+        let mut statement = transaction.prepare("SELECT stem_id FROM timeline_stems WHERE timeline_id = ?1").map_err(database_error)?;
+        let ids = statement
+            .query_map([timeline_id], |row| row.get::<_, i64>(0))
+            .map_err(database_error)?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(database_error)?;
+        ids
+    };
+    for stem in stems {
+        let stem_id = stem.id.unwrap_or_default();
+        if transaction.execute(
+            "UPDATE stems SET name = ?1, color = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?3",
+            params![stem.name.trim(), stem.color.trim(), stem_id],
+        ).map_err(database_error)? == 0 {
+            return Err("Um stem global não foi encontrado.".to_string());
+        }
+        transaction.execute("UPDATE timeline_events SET stem = ?1 WHERE stem_id = ?2", params![stem.name.trim(), stem_id]).map_err(database_error)?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO timeline_stems (timeline_id, stem_id) VALUES (?1, ?2)",
+            params![timeline_id, stem_id],
+        ).map_err(database_error)?;
+    }
+    for stem_id in current_ids.difference(&desired_ids) {
+        transaction.execute("DELETE FROM timeline_events WHERE timeline_id = ?1 AND stem_id = ?2", params![timeline_id, stem_id]).map_err(database_error)?;
+        transaction.execute("DELETE FROM timeline_stems WHERE timeline_id = ?1 AND stem_id = ?2", params![timeline_id, stem_id]).map_err(database_error)?;
     }
     Ok(())
 }
@@ -164,7 +175,7 @@ fn get_by_id(connection: &Connection, timeline_id: i64) -> Result<Timeline, Stri
 
 fn list_stems(connection: &Connection, timeline_id: i64) -> Result<Vec<TimelineStem>, String> {
     let mut statement = connection
-        .prepare("SELECT id, name, color FROM timeline_stems WHERE timeline_id = ?1 ORDER BY id")
+        .prepare("SELECT stems.id, stems.name, stems.color FROM timeline_stems JOIN stems ON stems.id = timeline_stems.stem_id WHERE timeline_stems.timeline_id = ?1 ORDER BY stems.id")
         .map_err(database_error)?;
     let rows = statement
         .query_map([timeline_id], |row| {
@@ -179,15 +190,16 @@ fn list_stems(connection: &Connection, timeline_id: i64) -> Result<Vec<TimelineS
 }
 
 fn list_events(connection: &Connection, timeline_id: i64) -> Result<Vec<TimelineEvent>, String> {
-    let mut statement = connection.prepare("SELECT id, stem, time_seconds, confidence, origin FROM timeline_events WHERE timeline_id = ?1 ORDER BY time_seconds, id").map_err(database_error)?;
+    let mut statement = connection.prepare("SELECT timeline_events.id, stems.name, timeline_events.stem_id, timeline_events.time_seconds, timeline_events.confidence, timeline_events.origin FROM timeline_events JOIN stems ON stems.id = timeline_events.stem_id WHERE timeline_events.timeline_id = ?1 ORDER BY timeline_events.time_seconds, timeline_events.id").map_err(database_error)?;
     let rows = statement
         .query_map([timeline_id], |row| {
             Ok(TimelineEvent {
                 id: row.get(0)?,
                 stem: row.get(1)?,
-                time_seconds: row.get(2)?,
-                confidence: row.get(3)?,
-                origin: row.get(4)?,
+                stem_id: row.get(2)?,
+                time_seconds: row.get(3)?,
+                confidence: row.get(4)?,
+                origin: row.get(5)?,
             })
         })
         .map_err(database_error)?;

@@ -1,7 +1,7 @@
 use crate::{
     database::Database,
-    models::{AudioFile, AudioImportInput, RitraceRenderInput, RitraceRenderResult, Scenario, ScenarioInput, Timeline, TimelineCreateInput, TimelineSaveInput},
-    services::{audio_import_service, music_library_service, ritrace_service, scenario_service, timeline_service},
+    models::{AudioFile, AudioImportInput, RitraceRenderInput, RitraceRenderResult, Scenario, ScenarioInput, StemInput, Timeline, TimelineCreateInput, TimelineSaveInput, TimelineStem},
+    services::{audio_import_service, music_library_service, ritrace_service, scenario_service, stem_service, timeline_service},
 };
 use tauri::{AppHandle, State};
 
@@ -51,6 +51,26 @@ pub fn update_timeline(
 #[tauri::command]
 pub fn delete_timeline(database: State<Database>, timeline_id: i64) -> Result<(), String> {
     timeline_service::delete(&database, timeline_id)
+}
+
+#[tauri::command]
+pub fn list_stems(database: State<Database>) -> Result<Vec<TimelineStem>, String> {
+    stem_service::list(&database)
+}
+
+#[tauri::command]
+pub fn create_stem(database: State<Database>, stem: StemInput) -> Result<TimelineStem, String> {
+    stem_service::create(&database, stem)
+}
+
+#[tauri::command]
+pub fn update_stem(database: State<Database>, stem_id: i64, stem: StemInput) -> Result<TimelineStem, String> {
+    stem_service::update(&database, stem_id, stem)
+}
+
+#[tauri::command]
+pub fn delete_stem(database: State<Database>, stem_id: i64) -> Result<(), String> {
+    stem_service::delete(&database, stem_id)
 }
 
 #[tauri::command]

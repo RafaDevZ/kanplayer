@@ -108,7 +108,8 @@ export const Workspace = styled.div`
   box-sizing: border-box;
 `;
 
-export const Card = styled.button`
+export const Card = styled.div`
+  position: relative;
   height: 100px;
   width: 160px;
   border: 0;
@@ -128,9 +129,35 @@ export const Card = styled.button`
   }
 `;
 
+export const CardDeleteButton = styled.button`
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--white);
+  cursor: pointer;
+
+  &:hover {
+    background-color: var(--red-100);
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+`;
+
 export const CardTitle = styled.span`
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 `;
