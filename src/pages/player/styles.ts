@@ -29,6 +29,70 @@ export const PlayerControls = styled.div`
   justify-content: center;
 `;
 
+export const AudioModeControl = styled.label`
+  position: absolute;
+  left: calc(50% + 34px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--white);
+  font-size: 10px;
+  white-space: nowrap;
+`;
+
+export const AudioModeSlider = styled.input.attrs({ type: "range" })`
+  width: 58px;
+  margin: 0;
+  accent-color: var(--blue-100);
+
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+`;
+
+export const AudioModeToggle = styled.button<{ $active: boolean }>`
+  position: relative;
+  width: 30px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: ${({ $active }) => ($active ? "var(--blue-100)" : "var(--black-100)")};
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: ${({ $active }) => ($active ? "16px" : "2px")};
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--white);
+    transition: left 0.15s ease;
+  }
+
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+`;
+
+export const VocalExtractionButton = styled.button`
+  position: absolute;
+  right: 170px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 10px;
+  background: var(--blue-100);
+  color: var(--white);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+
+  &:disabled { opacity: 0.55; cursor: default; }
+`;
+
 export const TrackName = styled.div`
   height: 100%;
   width: 40%;

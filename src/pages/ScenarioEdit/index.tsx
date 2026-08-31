@@ -6,15 +6,26 @@ import { TitledInput } from "../../components/DefaultComponents";
 import Window from "../../components/Window";
 import { MotionDnd } from "../../components/MotionDnd";
 import { useMotionDnd } from "../../components/MotionDnd/useMotionDnd";
+import {
+  getFrequencyBandIntensityFromSpectrum,
+  isAudioAnalysisPlaying,
+  readFrequencySpectrum,
+  readVocalIntensity,
+} from "../../hooks/player/audioAnalysis";
 import type {
   ScenarioElementProps,
   ScenarioElementOperationProps,
+  FrequencyResponseProps,
+  VocalResponseProps,
   StemResponseOperation,
   StemResponseTransition,
 } from "../../interfaces/ScenarioElement";
 import { useScenarios, useUpdateScenario } from "../../queries/useScenarios";
 import { useStems } from "../../queries/useStems";
-import { useTimelines } from "../../queries/useTimelines";
+import { useTimelines, useUpdateTimeline } from "../../queries/useTimelines";
+import { useRitraceRender } from "../../queries/useRitrace";
+import { ritraceProgressSchema, type RitraceProgressProps } from "../../interfaces/Ritrace";
+import { listen } from "@tauri-apps/api/event";
 import Player from "../player";
 import * as SE from "./styles";
 
@@ -115,28 +126,71 @@ const applyStemResponseTransition = (
   }
 };
 
+interface ElementResponse {
+  scale: number;
+  rotation: number;
+  translationX: number;
+  translationY: number;
+  translationZ: number;
+}
+
+const applyResponseOperation = (
+  response: ElementResponse,
+  operation: Pick<ScenarioElementOperationProps, "operation" | "value" | "translationX" | "translationY" | "translationZ" | "repetitions">,
+  intensity: number,
+  progress = 1,
+): ElementResponse => {
+  if (operation.operation === "scale") {
+    return { ...response, scale: response.scale * (1 + ((operation.value ?? 1) - 1) * intensity) };
+  }
+  if (operation.operation === "rotation") {
+    return { ...response, rotation: response.rotation + (operation.value ?? 0) * intensity };
+  }
+  const oscillation = operation.operation === "wiggle"
+    ? Math.sin(progress * Math.max(1, Math.floor(operation.repetitions ?? 1)) * Math.PI * 2)
+      * (progress >= 0 && progress <= 1 ? 1 - progress : 1)
+      * intensity
+    : intensity;
+  return {
+    ...response,
+    translationX: response.translationX + (operation.translationX ?? 0) * oscillation,
+    translationY: response.translationY + (operation.translationY ?? 0) * oscillation,
+    translationZ: response.translationZ + (operation.translationZ ?? 0) * oscillation,
+  };
+};
+
 const getElementTypeLabel = (element: ScenarioElementProps) =>
   element.imageData ? "Imagem" : element.type === "circle" ? "Bolinha" : String(element.type).charAt(0).toUpperCase() + String(element.type).slice(1);
 
 const ensureElementNames = (items: ScenarioElementProps[]) => {
   const usedNames = new Set<string>();
   const nextNumbers = new Map<string, number>();
+  // Reserve os nomes já persistidos antes de gerar nomes para itens novos.
+  // Assim, inserir uma cópia no início da lista nunca renomeia o original.
+  items.forEach((element) => {
+    const name = element.name?.trim();
+    if (!name) return;
+    usedNames.add(name);
+    const typeLabel = getElementTypeLabel(element);
+    const match = name.match(new RegExp(`^${typeLabel} (\\d+)$`, "i"));
+    if (match) nextNumbers.set(typeLabel, Math.max(nextNumbers.get(typeLabel) ?? 0, Number(match[1])));
+  });
+  const assignedNames = new Set<string>();
   return items.map((element) => {
     const typeLabel = getElementTypeLabel(element);
     const existingName = element.name?.trim();
-    if (existingName && !usedNames.has(existingName)) {
-      usedNames.add(existingName);
-      const match = existingName.match(new RegExp(`^${typeLabel} (\\d+)$`, "i"));
-      if (match) nextNumbers.set(typeLabel, Math.max(nextNumbers.get(typeLabel) ?? 0, Number(match[1])));
+    if (existingName && !assignedNames.has(existingName)) {
+      assignedNames.add(existingName);
       return element;
     }
     let nextNumber = (nextNumbers.get(typeLabel) ?? 0) + 1;
     let name = `${typeLabel} ${nextNumber}`;
-    while (usedNames.has(name)) {
+    while (usedNames.has(name) || assignedNames.has(name)) {
       nextNumber += 1;
       name = `${typeLabel} ${nextNumber}`;
     }
     nextNumbers.set(typeLabel, nextNumber);
+    assignedNames.add(name);
     usedNames.add(name);
     return { ...element, name };
   });
@@ -196,12 +250,57 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [isWindowStemOpen, setIsWindowStemOpen] = useState(false);
   const [isWindowOperationOpen, setIsWindowOperationOpen] = useState(false);
   const [isWindowTransitionOpen, setIsWindowTransitionOpen] = useState(false);
+  const [isFrequencyWindowVisible, setIsFrequencyWindowVisible] = useState(false);
+  const [isVocalWindowVisible, setIsVocalWindowVisible] = useState(false);
+  const [vocalProgress, setVocalProgress] = useState<RitraceProgressProps>();
+  const [isFrequencyOperationOpen, setIsFrequencyOperationOpen] = useState(false);
+  const [isFrequencyTransitionOpen, setIsFrequencyTransitionOpen] = useState(false);
+  const [frequencyDraft, setFrequencyDraft] = useState<FrequencyResponseProps>();
+  const [isVocalResponseWindowVisible, setIsVocalResponseWindowVisible] = useState(false);
+  const [vocalResponseDraft, setVocalResponseDraft] = useState<VocalResponseProps>();
+  const [frequencyMaximumHz, setFrequencyMaximumHz] = useState(22_050);
+  const frequencyMaximumRef = useRef(22_050);
+  const frequencyCanvasRef = useRef<HTMLCanvasElement>(null);
+  const frequencyDragRef = useRef<"minHz" | "maxHz" | undefined>(undefined);
+  const frequencySmoothedRef = useRef<Record<string, number>>({});
+  const vocalSmoothedRef = useRef<Record<string, number>>({});
+  const frequencyLastTimeRef = useRef<number | undefined>(undefined);
+  const responseSignatureRef = useRef("");
   const { draggable, dragPreview, dragPreviewElementRef, isLocalDragging } = useMotionDnd();
+  const { mutateAsync: renderRitrace, isPending: isExtractingVocal } = useRitraceRender();
+  const { mutateAsync: updateTimeline } = useUpdateTimeline();
   const selectedTimeline = timelines?.find(
     (timeline) => timeline.id === selectedTimelineId,
   );
   const selectTimeline = (timelineId: number) => setSelectedTimelineId(timelineId);
   const selectedElement = elements.find((element) => element.id === selectedElementId);
+
+  const extractTimelineVocal = async () => {
+    if (!selectedTimeline || selectedTimeline.vocalPath || isExtractingVocal) return;
+    const jobId = crypto.randomUUID();
+    setIsVocalWindowVisible(true);
+    setVocalProgress({ jobId, stage: "Preparando extração vocal", percent: 0, elapsedSeconds: 0 });
+    const unlisten = await listen<unknown>("ritrace-progress", (event) => {
+      const progress = ritraceProgressSchema.safeParse(event.payload);
+      if (progress.success && progress.data.jobId === jobId) setVocalProgress(progress.data);
+    });
+    try {
+      const result = await renderRitrace({
+        jobId,
+        audioPath: selectedTimeline.track.path,
+        kickMinConfidence: 0,
+        snareMinConfidence: 0,
+        hihatMinConfidence: 0,
+        vocalOnly: true,
+        timelineId: selectedTimeline.id,
+      });
+      if (!result.vocalPath) throw new Error("O RiTrace não retornou o arquivo vocal.");
+      await updateTimeline({ ...selectedTimeline, vocalPath: result.vocalPath });
+      setVocalProgress({ jobId, stage: "Vocal extraído e salvo", percent: 100, elapsedSeconds: vocalProgress?.elapsedSeconds ?? 0 });
+    } finally {
+      unlisten();
+    }
+  };
   const selectElement = (elementId?: string) => {
     setSelectedElementId(elementId);
     setSelectedElementIds(elementId ? [elementId] : []);
@@ -216,6 +315,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     });
   };
   const availableStems = globalStems ?? [];
+  const frequencyResponse = frequencyDraft ?? selectedElement?.frequencyResponse;
+  const vocalResponse = vocalResponseDraft ?? selectedElement?.vocalResponse;
   const editingOperation = selectedElement?.operations.find(
     (operation) => operation.id === editingOperationId,
   );
@@ -224,13 +325,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const reorderLayer = (sourceId: string, targetId: string, direction: "top" | "bottom" = "top") => {
     if (sourceId === targetId) return;
     setElements((currentElements) => {
-      const nextLayers = [...currentElements].reverse();
+      const nextLayers = [...currentElements];
       const sourceIndex = nextLayers.findIndex((element) => element.id === sourceId);
       const targetIndex = nextLayers.findIndex((element) => element.id === targetId);
       if (sourceIndex < 0 || targetIndex < 0) return currentElements;
       const [movedLayer] = nextLayers.splice(sourceIndex, 1);
-      nextLayers.splice(direction === "bottom" ? targetIndex + 1 : targetIndex, 0, movedLayer);
-      return nextLayers.reverse();
+      const adjustedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+      nextLayers.splice(direction === "bottom" ? adjustedTargetIndex + 1 : adjustedTargetIndex, 0, movedLayer);
+      return nextLayers;
     });
   };
 
@@ -286,11 +388,194 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     setIsOperationWindowVisible(true);
   };
 
+  const addFrequencyResponse = () => {
+    if (!selectedElement || selectedElement.frequencyResponse) return;
+    setFrequencyDraft({ minHz: 20, maxHz: frequencyMaximumHz, strength: 1 });
+    setIsFrequencyWindowVisible(true);
+  };
+
+  const addVocalResponse = () => {
+    if (!selectedElement || selectedElement.vocalResponse || !selectedTimeline?.vocalPath) return;
+    setVocalResponseDraft({ strength: 1 });
+    setIsVocalResponseWindowVisible(true);
+  };
+  const openVocalResponse = () => {
+    if (!selectedElement?.vocalResponse) return;
+    setVocalResponseDraft({ ...selectedElement.vocalResponse });
+    setIsVocalResponseWindowVisible(true);
+  };
+  const updateVocalResponse = (updater: (config: VocalResponseProps) => VocalResponseProps) => {
+    setVocalResponseDraft((current) => updater(current ?? selectedElement?.vocalResponse ?? { strength: 1 }));
+  };
+  const saveVocalResponse = () => {
+    if (!vocalResponseDraft) return;
+    updateSelectedElement((element) => ({ ...element, vocalResponse: { ...vocalResponseDraft } }));
+    setVocalResponseDraft(undefined);
+    setIsVocalResponseWindowVisible(false);
+  };
+  const removeVocalResponse = () => {
+    updateSelectedElement((element) => ({ ...element, vocalResponse: undefined }));
+    setVocalResponseDraft(undefined);
+    setIsVocalResponseWindowVisible(false);
+  };
+
+  const openFrequencyResponse = () => {
+    if (!selectedElement?.frequencyResponse) return;
+    setFrequencyDraft({ ...selectedElement.frequencyResponse });
+    setIsFrequencyWindowVisible(true);
+  };
+
+  const saveFrequencyResponse = () => {
+    if (!frequencyDraft) return;
+    updateSelectedElement((element) => ({ ...element, frequencyResponse: { ...frequencyDraft } }));
+    setIsFrequencyWindowVisible(false);
+    setFrequencyDraft(undefined);
+  };
+
+  const removeFrequencyResponse = () => {
+    updateSelectedElement((element) => ({ ...element, frequencyResponse: undefined }));
+    setIsFrequencyWindowVisible(false);
+    setFrequencyDraft(undefined);
+  };
+
+  const updateFrequencyResponse = (updater: (config: FrequencyResponseProps) => FrequencyResponseProps) => {
+    setFrequencyDraft((current) => updater(current ?? selectedElement?.frequencyResponse ?? { minHz: 20, maxHz: frequencyMaximumHz }));
+  };
+
+  const setFrequencyResponseNumber = (
+    field: keyof Pick<FrequencyResponseProps, "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "strength" | "attackSeconds" | "releaseSeconds">,
+    value: string,
+  ) => {
+    if (value === "") {
+      updateFrequencyResponse((config) => ({ ...config, [field]: undefined }));
+      return;
+    }
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue < 0 && !field.startsWith("translation")) return;
+    if (field === "repetitions" && (!Number.isInteger(numericValue) || numericValue < 1)) return;
+    updateFrequencyResponse((config) => ({
+      ...config,
+      [field]: field === "strength" ? Math.min(1, numericValue) : numericValue,
+    }));
+  };
+
+  const setVocalResponseNumber = (
+    field: keyof Pick<VocalResponseProps, "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "strength" | "attackSeconds" | "releaseSeconds">,
+    value: string,
+  ) => {
+    if (value === "") return updateVocalResponse((config) => ({ ...config, [field]: undefined }));
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || (numericValue < 0 && !field.startsWith("translation"))) return;
+    if (field === "repetitions" && (!Number.isInteger(numericValue) || numericValue < 1)) return;
+    updateVocalResponse((config) => ({ ...config, [field]: field === "strength" ? Math.min(1, numericValue) : numericValue }));
+  };
+
+  const updateFrequencyBoundary = (boundary: "minHz" | "maxHz", value: number) => {
+    if (!Number.isFinite(value)) return;
+    updateFrequencyResponse((config) => {
+      const current = config;
+      const nextValue = Math.max(0, Math.min(frequencyMaximumHz, value));
+      const next = boundary === "minHz"
+        ? { minHz: Math.min(nextValue, current.maxHz - 1), maxHz: current.maxHz }
+        : { minHz: current.minHz, maxHz: Math.max(current.minHz + 1, nextValue) };
+      return { ...config, ...next };
+    });
+  };
+
+  const handleFrequencyHandlePointerDown = (
+    event: React.PointerEvent<HTMLElement>,
+    boundary: "minHz" | "maxHz",
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    frequencyDragRef.current = boundary;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleFrequencyHandlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    const boundary = frequencyDragRef.current;
+    const canvas = frequencyCanvasRef.current;
+    if (!boundary || !canvas) return;
+    const bounds = canvas.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    updateFrequencyBoundary(boundary, ratio * frequencyMaximumHz);
+  };
+
+  const stopFrequencyHandleDrag = () => {
+    frequencyDragRef.current = undefined;
+  };
+
+  useEffect(() => {
+    if (!isFrequencyWindowVisible || !frequencyResponse) return;
+    let frame = 0;
+    let idleTimer: number | undefined;
+    let lastDrawAt = 0;
+    let canvasContext: CanvasRenderingContext2D | null = null;
+    const update = () => {
+      const now = performance.now();
+      // A visualização não precisa acompanhar o tick de áudio a 60+ FPS. A
+      // análise usada pelo cenário continua sendo atualizada no loop central;
+      // aqui limitamos apenas o desenho do modal a 30 FPS.
+      if (now - lastDrawAt < 1000 / 30) {
+        frame = requestAnimationFrame(update);
+        return;
+      }
+      const data = readFrequencySpectrum();
+      if (data) {
+        lastDrawAt = now;
+        const maximumHz = data.sampleRate / 2;
+        if (maximumHz !== frequencyMaximumRef.current) {
+          frequencyMaximumRef.current = maximumHz;
+          setFrequencyMaximumHz(maximumHz);
+        }
+        const canvas = frequencyCanvasRef.current;
+        canvasContext ??= canvas?.getContext("2d") ?? null;
+        if (canvas && canvasContext) {
+          const context = canvasContext;
+          // Evita uma superfície interna desproporcional em monitores com DPR
+          // muito alto, mantendo nitidez suficiente para o tamanho do gráfico.
+          const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+          const width = Math.max(1, Math.round(canvas.clientWidth * pixelRatio));
+          const height = Math.max(1, Math.round(canvas.clientHeight * pixelRatio));
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+          context.clearRect(0, 0, width, height);
+          context.fillStyle = "#c77dff";
+          const barCount = Math.min(256, data.values.length);
+          const binsPerBar = data.values.length / barCount;
+          const barWidth = width / barCount;
+          for (let index = 0; index < barCount; index += 1) {
+            const start = Math.floor(index * binsPerBar);
+            const end = Math.max(start + 1, Math.floor((index + 1) * binsPerBar));
+            let peak = 0;
+            for (let bin = start; bin < end; bin += 1) peak = Math.max(peak, data.values[bin]);
+            const barHeight = (peak / 255) * height;
+            context.fillRect(index * barWidth, height - barHeight, Math.max(1, barWidth), barHeight);
+          }
+        }
+      }
+      if (isAudioAnalysisPlaying()) {
+        frame = requestAnimationFrame(update);
+      } else {
+        // Enquanto pausado, não há frames de desenho. Uma checagem esparsa
+        // permite retomar o gráfico caso o usuário dê play com a janela aberta.
+        idleTimer = window.setTimeout(update, 250);
+      }
+    };
+    update();
+    return () => {
+      cancelAnimationFrame(frame);
+      if (idleTimer !== undefined) window.clearTimeout(idleTimer);
+      canvasContext = null;
+    };
+  }, [isFrequencyWindowVisible]);
+
   const addComponent = () => {
     if (!scenario) return;
     const componentId = crypto.randomUUID();
     setElements((currentElements) => ensureElementNames([
-      ...currentElements,
       {
         id: componentId,
         name: "",
@@ -305,6 +590,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         color: "#00a8ff",
         operations: [],
       },
+      ...currentElements,
     ]));
     selectElement(componentId);
   };
@@ -329,7 +615,6 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         const initialSize = Math.min(240, Math.max(40, Math.min(scenario.width, scenario.height) * 0.35));
         const factor = initialSize / Math.max(image.naturalWidth, image.naturalHeight);
         setElements((currentElements) => ensureElementNames([
-          ...currentElements,
           {
             id: componentId,
             name: "",
@@ -348,6 +633,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             imageHeight: image.naturalHeight,
             operations: [],
           },
+          ...currentElements,
         ]));
         selectElement(componentId);
       };
@@ -403,55 +689,89 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const syncStemResponseWithPlayer = (currentTime: number) => {
-    if (!selectedTimeline) {
-      setStemResponseScales({});
-      setStemResponseRotations({});
-      setStemResponseTranslations({});
-      return;
-    }
-
+    // Só consulta o analyser quando existe ao menos um modulador de faixa
+    // utilizável. Isso mantém o playback normal livre de trabalho de FFT.
+    const hasFrequencyModulator = Boolean(
+      selectedTimeline && elements.some((element) => element.frequencyResponse?.operation),
+    );
+    const spectrum = hasFrequencyModulator ? readFrequencySpectrum() : undefined;
+    const hasVocalModulator = Boolean(selectedTimeline?.vocalPath && elements.some((element) => element.vocalResponse?.operation));
+    const vocalIntensity = hasVocalModulator ? readVocalIntensity() : 0;
+    const previousTime = frequencyLastTimeRef.current;
+    const elapsedSinceLastFrame = previousTime === undefined || currentTime < previousTime
+      ? 0
+      : currentTime - previousTime;
+    frequencyLastTimeRef.current = currentTime;
+    const latestEventsByStem = new Map<number, NonNullable<typeof selectedTimeline>["events"][number]>();
+    selectedTimeline?.events.forEach((timelineEvent) => {
+      if (timelineEvent.timeSeconds > currentTime || !timelineEvent.stemId) return;
+      const previousEvent = latestEventsByStem.get(timelineEvent.stemId);
+      if (!previousEvent || timelineEvent.timeSeconds >= previousEvent.timeSeconds) {
+        latestEventsByStem.set(timelineEvent.stemId, timelineEvent);
+      }
+    });
     const nextResponses =
       elements.map((element) => {
         const response = element.operations.reduce(
           (currentResponse, operation) => {
-            if (!operation.stemId || !operation.operation) return currentResponse;
+            if (!operation.operation) return currentResponse;
             if ((operation.operation === "scale" || operation.operation === "rotation") && operation.value === undefined) return currentResponse;
-            const matchingEvents = selectedTimeline.events.filter((timelineEvent) => timelineEvent.stemId === operation.stemId && timelineEvent.timeSeconds <= currentTime);
-            const event = matchingEvents[matchingEvents.length - 1];
-            if (!event) return currentResponse;
-            const elapsed = currentTime - event.timeSeconds;
+            const event = operation.stemId ? latestEventsByStem.get(operation.stemId) : undefined;
+            const elapsed = event ? currentTime - event.timeSeconds : 0;
             const attack = operation.attackSeconds ?? 0;
             const release = operation.releaseSeconds ?? 0;
-            const intensity = elapsed <= attack
+            const stemIntensity = event
+              ? elapsed <= attack
               ? (attack === 0 ? 1 : applyStemResponseTransition(elapsed / attack, operation.transition))
               : release > 0 && elapsed <= attack + release
                 ? 1 - applyStemResponseTransition((elapsed - attack) / release, operation.transition)
-                : 0;
-            if (operation.operation === "scale") {
-              return { ...currentResponse, scale: currentResponse.scale * (1 + ((operation.value ?? 1) - 1) * intensity) };
-            }
-            if (operation.operation === "rotation") {
-              return { ...currentResponse, rotation: currentResponse.rotation + (operation.value ?? 0) * intensity };
-            }
-            const isWiggle = operation.operation === "wiggle";
+                : 0
+              : 0;
+            const intensity = stemIntensity;
+            if (intensity <= 0) return currentResponse;
             const duration = attack + release;
             const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
-            const repetitions = Math.max(1, Math.floor(operation.repetitions ?? 1));
-            const decay = 1 - progress;
-            const oscillation = isWiggle
-              ? Math.sin(progress * repetitions * Math.PI * 2) * decay * intensity
-              : intensity;
-            return {
-              ...currentResponse,
-              translationX: currentResponse.translationX + (operation.translationX ?? 0) * oscillation,
-              translationY: currentResponse.translationY + (operation.translationY ?? 0) * oscillation,
-              translationZ: currentResponse.translationZ + (operation.translationZ ?? 0) * oscillation,
-            };
+            return applyResponseOperation(currentResponse, operation, intensity, progress);
           },
           { scale: 1, rotation: 0, translationX: 0, translationY: 0, translationZ: 0 },
         );
-        return { id: element.id, ...response };
+        const frequency = element.frequencyResponse;
+        const frequencyOperation = frequency?.operation;
+        let frequencyForce = 0;
+        if (spectrum && selectedTimeline && frequency && frequencyOperation) {
+          const rawForce = Math.min(1, getFrequencyBandIntensityFromSpectrum(spectrum, frequency.minHz, frequency.maxHz) * (frequency.strength ?? 1));
+          const previousForce = frequencySmoothedRef.current[element.id] ?? 0;
+          const duration = rawForce >= previousForce ? frequency.attackSeconds ?? 0 : frequency.releaseSeconds ?? 0;
+          const smoothing = duration > 0 ? Math.min(1, elapsedSinceLastFrame / duration) : 1;
+          const smoothedForce = previousForce + (rawForce - previousForce) * smoothing;
+          frequencySmoothedRef.current[element.id] = smoothedForce;
+          frequencyForce = applyStemResponseTransition(smoothedForce, frequency.transition);
+        } else if (frequency) {
+          frequencySmoothedRef.current[element.id] = 0;
+        }
+        const finalResponse = frequencyOperation && frequencyForce > 0
+          // No modulador contínuo a fase do Wiggle vem do relógio do áudio;
+          // passar o tempo evita a fase nula fixa (sin(2πn)) e mantém a
+          // oscilação derivada do mesmo tick central do player.
+          ? applyResponseOperation(response, frequency, frequencyForce, currentTime)
+          : response;
+        const vocal = element.vocalResponse;
+        const rawVocalForce = vocal?.operation ? Math.min(1, vocalIntensity * (vocal.strength ?? 1)) : 0;
+        const previousVocalForce = vocalSmoothedRef.current[element.id] ?? 0;
+        const vocalDuration = rawVocalForce >= previousVocalForce ? vocal?.attackSeconds ?? 0 : vocal?.releaseSeconds ?? 0;
+        const vocalSmoothing = vocalDuration > 0 ? Math.min(1, elapsedSinceLastFrame / vocalDuration) : 1;
+        const vocalForce = previousVocalForce + (rawVocalForce - previousVocalForce) * vocalSmoothing;
+        if (vocal) vocalSmoothedRef.current[element.id] = vocalForce;
+        const responseWithVocal = vocalForce > 0 && vocal
+          ? applyResponseOperation(finalResponse, vocal, applyStemResponseTransition(vocalForce, vocal.transition), currentTime)
+          : finalResponse;
+        return { id: element.id, ...responseWithVocal };
       });
+    const responseSignature = nextResponses
+      .map((response) => `${response.id}:${response.scale}:${response.rotation}:${response.translationX}:${response.translationY}:${response.translationZ}`)
+      .join("|");
+    if (responseSignature === responseSignatureRef.current) return;
+    responseSignatureRef.current = responseSignature;
     setStemResponseScales(
       Object.fromEntries(nextResponses.map((response) => [response.id, response.scale])),
     );
@@ -510,7 +830,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     return { x: element.x + offset.x, y: element.y + offset.y };
   };
 
-  const getRenderedElementProps = (element: ScenarioElementProps) => {
+  const getRenderedElementProps = (element: ScenarioElementProps, layerIndex = 0) => {
     const responseScale = stemResponseScales[element.id] ?? 1;
     const responseRotation = stemResponseRotations[element.id] ?? 0;
     const responseTranslation = stemResponseTranslations[element.id] ?? { x: 0, y: 0, z: 0 };
@@ -530,6 +850,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       $rotation: element.rotation,
       $responseRotation: responseRotation,
       $isSelected: selectedElementIds.includes(element.id),
+      $layerZIndex: Math.max(1, elements.length - layerIndex),
     };
   };
 
@@ -599,12 +920,24 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   useEffect(() => {
     if (!scenario) return;
     const loadedElements = ensureElementNames(scenario.elements);
-    setElements([...loadedElements].sort((first, second) =>
-      first.name.localeCompare(second.name, undefined, { numeric: true }),
-    ));
+    // A sequência persistida é a ordem das camadas e, portanto, a fonte do
+    // z-index. Não ordenar por nome ao reabrir o cenário.
+    setElements([...loadedElements]);
     selectElement();
     setSelectedTimelineId(scenario.elements.find((element) => element.linkedTimelineId)?.linkedTimelineId);
+    frequencySmoothedRef.current = {};
+    vocalSmoothedRef.current = {};
+    frequencyLastTimeRef.current = undefined;
+    responseSignatureRef.current = "";
   }, [scenario?.id]);
+
+  useEffect(() => {
+    setIsFrequencyWindowVisible(false);
+    setFrequencyDraft(undefined);
+    setIsVocalResponseWindowVisible(false);
+    setVocalResponseDraft(undefined);
+    frequencyDragRef.current = undefined;
+  }, [selectedElementId]);
 
   const handleZoom = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1002,7 +1335,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     const point = getScenarioPoint(event.clientX, event.clientY);
     const viewport = viewportRef.current;
     if (!point || !viewport) return;
-    const transformElement = event.altKey && mode === "move"
+    let transformElement = event.altKey && mode === "move"
       ? {
           ...element,
           id: crypto.randomUUID(),
@@ -1011,12 +1344,17 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             ...operation,
             id: crypto.randomUUID(),
           })),
-        }
+      }
       : element;
     if (transformElement !== element) {
+      // Gere o nome antes de iniciar o drag. O movimento usa startTransform
+      // como base em cada frame; se a cópia permanecer com nome vazio, esse
+      // valor acaba sobrescrevendo o nome recém-gerado pelo estado.
+      transformElement = ensureElementNames([...elements, transformElement])
+        .find((item) => item.id === transformElement.id) ?? transformElement;
       setElements((currentElements) => ensureElementNames([
-        ...currentElements,
         transformElement,
+        ...currentElements,
       ]));
     }
     elementDragRef.current = {
@@ -1081,6 +1419,177 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           </SE.HeaderSaveButton>
         </SE.HeaderActions>
       </SE.Header>
+      <Window
+        isVisible={isVocalWindowVisible}
+        disableClose={isExtractingVocal}
+        onClose={() => {
+          if (isExtractingVocal) return;
+          setIsVocalWindowVisible(false);
+          setVocalProgress(undefined);
+        }}
+        title="Extrair vocal da música"
+        height="220px"
+        width="420px"
+      >
+        <SE.OperationWindowBody>
+          <SE.VocalExtractionStatus>
+            <span>{vocalProgress?.stage ?? "Preparando extração vocal"}</span>
+            <strong>{vocalProgress?.percent ?? 0}%</strong>
+          </SE.VocalExtractionStatus>
+          <SE.OperationActions>
+            <SE.OperationSaveButton type="button" disabled={isExtractingVocal} onClick={() => {
+              if (selectedTimeline?.vocalPath) {
+                setIsVocalWindowVisible(false);
+                setVocalProgress(undefined);
+              } else {
+                void extractTimelineVocal();
+              }
+            }}>
+              {selectedTimeline?.vocalPath ? "Fechar" : isExtractingVocal ? "Extraindo..." : "Extrair vocal"}
+            </SE.OperationSaveButton>
+          </SE.OperationActions>
+        </SE.OperationWindowBody>
+      </Window>
+      <Window
+        isVisible={isVocalResponseWindowVisible && !!vocalResponse}
+        onClose={() => { setIsVocalResponseWindowVisible(false); setVocalResponseDraft(undefined); }}
+        title="Modulador vocal"
+        height="420px"
+        width="420px"
+      >
+        {vocalResponse && (
+          <SE.OperationWindowBody>
+            <SE.FrequencyForm>
+              <Dropdown title={`Operação: ${vocalResponse.operation ? stemResponseOperationLabels[vocalResponse.operation] : "Nenhuma"}`} width="100%" isOpen={isFrequencyOperationOpen} onClick={() => { setIsFrequencyOperationOpen((open) => !open); setIsFrequencyTransitionOpen(false); }}>
+                {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => <DropdownOption key={operation ?? "none"} onClick={() => { updateVocalResponse((config) => ({ ...config, operation })); setIsFrequencyOperationOpen(false); }}>{operation ? stemResponseOperationLabels[operation] : "Nenhuma"}</DropdownOption>)}
+              </Dropdown>
+              <Dropdown title={`Transição: ${vocalResponse.transition ? stemResponseTransitionLabels[vocalResponse.transition] : "Linear"}`} width="100%" isOpen={isFrequencyTransitionOpen} onClick={() => { setIsFrequencyTransitionOpen((open) => !open); setIsFrequencyOperationOpen(false); }}>
+                {(["linear", "ease", "ease-in", "ease-out", "ease-in-out"] as const).map((transition) => <DropdownOption key={transition} onClick={() => { updateVocalResponse((config) => ({ ...config, transition })); setIsFrequencyTransitionOpen(false); }}>{stemResponseTransitionLabels[transition]}</DropdownOption>)}
+              </Dropdown>
+              {vocalResponse.operation === "translation" || vocalResponse.operation === "wiggle" ? <>
+                <TitledInput title="X" type="number" value={vocalResponse.translationX ?? ""} onChange={(event) => setVocalResponseNumber("translationX", event.currentTarget.value)} />
+                <TitledInput title="Y" type="number" value={vocalResponse.translationY ?? ""} onChange={(event) => setVocalResponseNumber("translationY", event.currentTarget.value)} />
+                <TitledInput title="Z" type="number" value={vocalResponse.translationZ ?? ""} onChange={(event) => setVocalResponseNumber("translationZ", event.currentTarget.value)} />
+                {vocalResponse.operation === "wiggle" && <TitledInput title="Repetições" type="number" min="1" step="1" value={vocalResponse.repetitions ?? 1} onChange={(event) => setVocalResponseNumber("repetitions", event.currentTarget.value)} />}
+              </> : <TitledInput title="Valor" type="number" value={vocalResponse.value ?? ""} onChange={(event) => setVocalResponseNumber("value", event.currentTarget.value)} />}
+              <TitledInput title="Força" type="number" min="0" max="1" step="0.01" value={vocalResponse.strength ?? 1} onChange={(event) => setVocalResponseNumber("strength", event.currentTarget.value)} />
+              <TitledInput title="Ataque (s)" type="number" min="0" value={vocalResponse.attackSeconds ?? ""} onChange={(event) => setVocalResponseNumber("attackSeconds", event.currentTarget.value)} />
+              <TitledInput title="Liberação (s)" type="number" min="0" value={vocalResponse.releaseSeconds ?? ""} onChange={(event) => setVocalResponseNumber("releaseSeconds", event.currentTarget.value)} />
+            </SE.FrequencyForm>
+            <SE.OperationActions><SE.OperationSaveButton type="button" onClick={saveVocalResponse}>Salvar</SE.OperationSaveButton><SE.OperationDeleteButton type="button" onClick={removeVocalResponse}>Excluir modulador</SE.OperationDeleteButton></SE.OperationActions>
+          </SE.OperationWindowBody>
+        )}
+      </Window>
+      <Window
+        isVisible={isFrequencyWindowVisible && !!frequencyResponse}
+        onClose={() => {
+          setIsFrequencyWindowVisible(false);
+          setFrequencyDraft(undefined);
+          frequencyDragRef.current = undefined;
+        }}
+        title="Modulador de frequência"
+        height="420px"
+        width="420px"
+      >
+        {frequencyResponse && (
+          <SE.FrequencyWindowBody>
+            <SE.FrequencyForm>
+              <SE.FrequencySpectrum>
+              <canvas ref={frequencyCanvasRef} />
+              <SE.FrequencyRange
+                style={{
+                  left: `${(frequencyResponse.minHz / frequencyMaximumHz) * 100}%`,
+                  width: `${((frequencyResponse.maxHz - frequencyResponse.minHz) / frequencyMaximumHz) * 100}%`,
+                }}
+              />
+              <SE.FrequencyHandle
+                style={{ left: `${(frequencyResponse.minHz / frequencyMaximumHz) * 100}%` }}
+                onPointerDown={(event) => handleFrequencyHandlePointerDown(event, "minHz")}
+                onPointerMove={handleFrequencyHandlePointerMove}
+                onPointerUp={stopFrequencyHandleDrag}
+                onPointerCancel={stopFrequencyHandleDrag}
+                aria-label="Frequência inicial"
+              />
+              <SE.FrequencyHandle
+                style={{ left: `${(frequencyResponse.maxHz / frequencyMaximumHz) * 100}%` }}
+                onPointerDown={(event) => handleFrequencyHandlePointerDown(event, "maxHz")}
+                onPointerMove={handleFrequencyHandlePointerMove}
+                onPointerUp={stopFrequencyHandleDrag}
+                onPointerCancel={stopFrequencyHandleDrag}
+                aria-label="Frequência final"
+              />
+              </SE.FrequencySpectrum>
+              <SE.FrequencyLabels>
+              <span>Início: {Math.round(frequencyResponse.minHz)} Hz</span>
+              <span>Fim: {Math.round(frequencyResponse.maxHz)} Hz</span>
+              </SE.FrequencyLabels>
+              <Dropdown
+              title={`Operação: ${frequencyResponse.operation ? stemResponseOperationLabels[frequencyResponse.operation] : "Nenhuma"}`}
+              width="100%"
+              isOpen={isFrequencyOperationOpen}
+              onClick={() => {
+                setIsFrequencyOperationOpen((open) => !open);
+                setIsFrequencyTransitionOpen(false);
+              }}
+            >
+              {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => (
+                <DropdownOption
+                  key={operation ?? "none"}
+                  onClick={() => {
+                    updateFrequencyResponse((config) => ({ ...config, operation }));
+                    setIsFrequencyOperationOpen(false);
+                  }}
+                >
+                  {operation ? stemResponseOperationLabels[operation] : "Nenhuma"}
+                </DropdownOption>
+              ))}
+              </Dropdown>
+              <Dropdown
+              title={`Transição: ${frequencyResponse.transition ? stemResponseTransitionLabels[frequencyResponse.transition] : "Linear"}`}
+              width="100%"
+              isOpen={isFrequencyTransitionOpen}
+              onClick={() => {
+                setIsFrequencyTransitionOpen((open) => !open);
+                setIsFrequencyOperationOpen(false);
+              }}
+            >
+              {(["linear", "ease", "ease-in", "ease-out", "ease-in-out"] as const).map((transition) => (
+                <DropdownOption
+                  key={transition}
+                  onClick={() => {
+                    updateFrequencyResponse((config) => ({ ...config, transition }));
+                    setIsFrequencyTransitionOpen(false);
+                  }}
+                >
+                  {stemResponseTransitionLabels[transition]}
+                </DropdownOption>
+              ))}
+              </Dropdown>
+              {frequencyResponse.operation === "translation" || frequencyResponse.operation === "wiggle" ? (
+              <>
+                <TitledInput title="X" type="number" value={frequencyResponse.translationX ?? ""} onChange={(event) => setFrequencyResponseNumber("translationX", event.currentTarget.value)} />
+                <TitledInput title="Y" type="number" value={frequencyResponse.translationY ?? ""} onChange={(event) => setFrequencyResponseNumber("translationY", event.currentTarget.value)} />
+                <TitledInput title="Z" type="number" value={frequencyResponse.translationZ ?? ""} onChange={(event) => setFrequencyResponseNumber("translationZ", event.currentTarget.value)} />
+                {frequencyResponse.operation === "wiggle" && <TitledInput title="Repetições" type="number" min="1" step="1" value={frequencyResponse.repetitions ?? 1} onChange={(event) => setFrequencyResponseNumber("repetitions", event.currentTarget.value)} />}
+              </>
+              ) : (
+              <TitledInput title="Valor" type="number" value={frequencyResponse.value ?? ""} onChange={(event) => setFrequencyResponseNumber("value", event.currentTarget.value)} />
+              )}
+              <TitledInput title="Força" type="number" min="0" max="1" step="0.01" value={frequencyResponse.strength ?? 1} onChange={(event) => setFrequencyResponseNumber("strength", event.currentTarget.value)} />
+              <TitledInput title="Ataque (s)" type="number" min="0" value={frequencyResponse.attackSeconds ?? ""} onChange={(event) => setFrequencyResponseNumber("attackSeconds", event.currentTarget.value)} />
+              <TitledInput title="Liberação (s)" type="number" min="0" value={frequencyResponse.releaseSeconds ?? ""} onChange={(event) => setFrequencyResponseNumber("releaseSeconds", event.currentTarget.value)} />
+            </SE.FrequencyForm>
+            <SE.OperationActions>
+              <SE.OperationSaveButton type="button" onClick={saveFrequencyResponse}>
+                Salvar
+              </SE.OperationSaveButton>
+              <SE.OperationDeleteButton type="button" onClick={removeFrequencyResponse}>
+                Excluir modulador
+              </SE.OperationDeleteButton>
+            </SE.OperationActions>
+          </SE.FrequencyWindowBody>
+        )}
+      </Window>
       <Window
         isVisible={isOperationWindowVisible && !!editingOperation}
         onClose={() => {
@@ -1299,10 +1808,10 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                     />
                   )}
                   <SE.ScenarioVisualLayer>
-                    {elements.map((element) => (
+                    {elements.map((element, layerIndex) => (
                       <SE.ScenarioElement
                         key={element.id}
-                        {...getRenderedElementProps(element)}
+                        {...getRenderedElementProps(element, layerIndex)}
                         onPointerDown={(event) => startElementTransform(event, "move", element)}
                       >
                         {element.imageData ? (
@@ -1315,7 +1824,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                   </SE.ScenarioVisualLayer>
                   <SE.ScenarioControlsLayer>
                     {elements.filter((element) => selectedElementIds.includes(element.id)).map((element) => (
-                      <SE.ScenarioElementControl key={element.id} {...getRenderedElementProps(element)}>
+                      <SE.ScenarioElementControl key={element.id} {...getRenderedElementProps(element, elements.findIndex((item) => item.id === element.id))}>
                         {selectedElementId !== element.id ? (
                           <SE.SelectedElementOutline $zoom={view.zoom} />
                         ) : (
@@ -1377,6 +1886,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                   : undefined
               }
               onTimeChange={syncStemResponseWithPlayer}
+              vocalExtraction={selectedTimeline ? {
+                extracted: Boolean(selectedTimeline.vocalPath),
+                processing: isExtractingVocal,
+                onExtract: () => void extractTimelineVocal(),
+              } : undefined}
+              vocalAnalysisPath={selectedTimeline?.vocalPath}
             />
           </SE.CenterPlayer>
           <SE.CenterBottom>
@@ -1463,6 +1978,31 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             <SE.StemBindingPanel>
               {selectedElement && (
                   <>
+                    <SE.OperationListHeader $accent="frequency">
+                      Modulador vocal
+                      {!selectedElement.vocalResponse && (
+                        <SE.OperationAddButton type="button" disabled={!selectedTimeline?.vocalPath} onClick={addVocalResponse} aria-label="Adicionar modulador vocal">{Icons.addIcon}</SE.OperationAddButton>
+                      )}
+                    </SE.OperationListHeader>
+                    {selectedElement.vocalResponse && (
+                      <SE.FrequencyOperationItem type="button" onClick={openVocalResponse}>Resposta ao vocal</SE.FrequencyOperationItem>
+                    )}
+                    <SE.OperationListHeader $accent="frequency">
+                      Modulador de frequência
+                      {!selectedElement.frequencyResponse && (
+                        <SE.OperationAddButton type="button" onClick={addFrequencyResponse} aria-label="Adicionar modulador de frequência">
+                          {Icons.addIcon}
+                        </SE.OperationAddButton>
+                      )}
+                    </SE.OperationListHeader>
+                    {selectedElement.frequencyResponse && (
+                      <SE.FrequencyOperationItem
+                        type="button"
+                        onClick={openFrequencyResponse}
+                      >
+                        Faixa: {Math.round(selectedElement.frequencyResponse.minHz)}–{Math.round(selectedElement.frequencyResponse.maxHz)} Hz
+                      </SE.FrequencyOperationItem>
+                    )}
                     <SE.OperationListHeader>
                       Operações
                       <SE.OperationAddButton type="button" onClick={addOperation}>{Icons.addIcon}</SE.OperationAddButton>

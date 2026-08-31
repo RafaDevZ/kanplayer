@@ -63,7 +63,7 @@ pub fn update(
     }
 
     transaction.execute("UPDATE tracks SET name = ?1, duration_seconds = ?2, audio_sha256 = ?3, updated_at = CURRENT_TIMESTAMP WHERE path = ?4", params![input.track.name, input.track.duration_seconds, input.track.audio_sha256, input.track.path]).map_err(database_error)?;
-    transaction.execute("UPDATE timelines SET name = ?1, bpm = ?2, first_beat_seconds = ?3, beat_interval_seconds = ?4, snap = ?5, follow_playhead = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?7", params![input.name, input.bpm, input.first_beat_seconds, input.beat_interval_seconds, input.snap, input.follow_playhead, timeline_id]).map_err(database_error)?;
+    transaction.execute("UPDATE timelines SET name = ?1, bpm = ?2, first_beat_seconds = ?3, beat_interval_seconds = ?4, snap = ?5, follow_playhead = ?6, vocal_path = ?7, updated_at = CURRENT_TIMESTAMP WHERE id = ?8", params![input.name, input.bpm, input.first_beat_seconds, input.beat_interval_seconds, input.snap, input.follow_playhead, input.vocal_path, timeline_id]).map_err(database_error)?;
     sync_timeline_stems(&transaction, timeline_id, &input.stems)?;
     replace_events(&transaction, timeline_id, &input.events)?;
     transaction.commit().map_err(database_error)?;
@@ -72,12 +72,16 @@ pub fn update(
 
 pub fn delete(database: &Database, timeline_id: i64) -> Result<(), String> {
     let connection = database.connect()?;
+    let vocal_path = connection.query_row("SELECT vocal_path FROM timelines WHERE id = ?1", [timeline_id], |row| row.get::<_, Option<String>>(0)).optional().map_err(database_error)?.flatten();
     if connection
         .execute("DELETE FROM timelines WHERE id = ?1", [timeline_id])
         .map_err(database_error)?
         == 0
     {
         return Err("Timeline não encontrada.".to_string());
+    }
+    if let Some(path) = vocal_path {
+        let _ = std::fs::remove_file(path);
     }
     Ok(())
 }
@@ -167,7 +171,7 @@ fn sync_timeline_stems(
 }
 
 fn get_by_id(connection: &Connection, timeline_id: i64) -> Result<Timeline, String> {
-    let mut timeline = connection.query_row("SELECT timelines.id, timelines.name, tracks.id, tracks.name, tracks.path, tracks.duration_seconds, tracks.audio_sha256, timelines.bpm, timelines.first_beat_seconds, timelines.beat_interval_seconds, timelines.snap, timelines.follow_playhead FROM timelines INNER JOIN tracks ON tracks.id = timelines.track_id WHERE timelines.id = ?1", [timeline_id], |row| Ok(Timeline { id: row.get(0)?, name: row.get(1)?, track: Track { id: row.get(2)?, name: row.get(3)?, path: row.get(4)?, duration_seconds: row.get(5)?, audio_sha256: row.get(6)? }, bpm: row.get(7)?, first_beat_seconds: row.get(8)?, beat_interval_seconds: row.get(9)?, snap: row.get(10)?, follow_playhead: row.get(11)?, stems: Vec::new(), events: Vec::new() })).map_err(database_error)?;
+    let mut timeline = connection.query_row("SELECT timelines.id, timelines.name, tracks.id, tracks.name, tracks.path, tracks.duration_seconds, tracks.audio_sha256, timelines.bpm, timelines.first_beat_seconds, timelines.beat_interval_seconds, timelines.snap, timelines.follow_playhead, timelines.vocal_path FROM timelines INNER JOIN tracks ON tracks.id = timelines.track_id WHERE timelines.id = ?1", [timeline_id], |row| Ok(Timeline { id: row.get(0)?, name: row.get(1)?, track: Track { id: row.get(2)?, name: row.get(3)?, path: row.get(4)?, duration_seconds: row.get(5)?, audio_sha256: row.get(6)? }, bpm: row.get(7)?, first_beat_seconds: row.get(8)?, beat_interval_seconds: row.get(9)?, snap: row.get(10)?, follow_playhead: row.get(11)?, vocal_path: row.get(12)?, stems: Vec::new(), events: Vec::new() })).map_err(database_error)?;
     timeline.stems = list_stems(connection, timeline_id)?;
     timeline.events = list_events(connection, timeline_id)?;
     Ok(timeline)

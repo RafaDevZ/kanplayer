@@ -67,6 +67,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 beat_interval_seconds REAL CHECK (beat_interval_seconds IS NULL OR beat_interval_seconds > 0),
                 snap TEXT NOT NULL DEFAULT '1/16',
                 follow_playhead INTEGER NOT NULL DEFAULT 0 CHECK (follow_playhead IN (0, 1)),
+                vocal_path TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
@@ -199,6 +200,12 @@ fn ensure_timeline_columns(connection: &Connection) -> Result<(), String> {
             .map_err(|error| format!("Não foi possível atualizar a estrutura do banco: {error}"))?;
     }
 
+    if !columns.iter().any(|column| column == "vocal_path") {
+        connection
+            .execute("ALTER TABLE timelines ADD COLUMN vocal_path TEXT", [])
+            .map_err(|error| format!("Não foi possível atualizar o vocal da timeline: {error}"))?;
+    }
+
     Ok(())
 }
 
@@ -267,13 +274,27 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
             .map_err(|error| format!("Não foi possível atualizar a cor dos elementos do cenário: {error}"))?;
     }
 
-    if !columns.iter().any(|column| column == "operations_json") {
+            if !columns.iter().any(|column| column == "operations_json") {
         connection.execute("ALTER TABLE scenario_elements ADD COLUMN operations_json TEXT NOT NULL DEFAULT '[]'", [])
             .map_err(|error| format!("Não foi possível atualizar as operações dos elementos do cenário: {error}"))?;
         connection.execute(
             "UPDATE scenario_elements SET operations_json = json_array(json_object('id', id || '-legacy-operation', 'stemId', linked_stem_id, 'operation', stem_response_operation, 'value', stem_response_value, 'attackSeconds', stem_response_attack_seconds, 'releaseSeconds', stem_response_release_seconds)) WHERE stem_response_operation IS NOT NULL",
             [],
         ).map_err(|error| format!("Não foi possível migrar as operações dos elementos do cenário: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "frequency_response_json") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN frequency_response_json TEXT",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar o modulador de frequência: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "vocal_response_json") {
+        connection.execute("ALTER TABLE scenario_elements ADD COLUMN vocal_response_json TEXT", [])
+            .map_err(|error| format!("Não foi possível atualizar o modulador vocal: {error}"))?;
     }
 
     if !columns.iter().any(|column| column == "stem_response_release_seconds") {

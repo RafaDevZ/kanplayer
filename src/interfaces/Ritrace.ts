@@ -6,6 +6,8 @@ export interface RitraceRenderProps {
   kickMinConfidence: number;
   snareMinConfidence: number;
   hihatMinConfidence: number;
+  vocalOnly?: boolean;
+  timelineId?: number;
 }
 
 export interface RitraceCancelProps {
@@ -32,6 +34,7 @@ export interface RitraceRenderResultProps {
   firstBeatSeconds: number;
   beatIntervalSeconds: number;
   events: RitraceEventProps[];
+  vocalPath?: string;
 }
 
 export const ritraceRenderResultSchema = z.object({
@@ -46,6 +49,7 @@ export const ritraceRenderResultSchema = z.object({
       origin: z.string().default("ritrace"),
     }),
   ),
+  vocalPath: z.string().nullish().transform((value) => value ?? undefined),
 });
 
 export const ritraceProgressSchema = z.object({

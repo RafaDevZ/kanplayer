@@ -3,6 +3,23 @@ import z from "zod";
 export type StemResponseOperation = "scale" | "rotation" | "translation" | "wiggle";
 export type StemResponseTransition = "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out";
 
+export interface FrequencyResponseProps {
+  minHz: number;
+  maxHz: number;
+  operation?: StemResponseOperation;
+  transition?: StemResponseTransition;
+  value?: number;
+  translationX?: number;
+  translationY?: number;
+  translationZ?: number;
+  repetitions?: number;
+  strength?: number;
+  attackSeconds?: number;
+  releaseSeconds?: number;
+}
+
+export type VocalResponseProps = Omit<FrequencyResponseProps, "minHz" | "maxHz">;
+
 export interface ScenarioElementOperationProps {
   id: string;
   stemId?: number;
@@ -55,6 +72,8 @@ export interface ScenarioElementProps {
   stemResponseValue?: number;
   stemResponseAttackSeconds?: number;
   stemResponseReleaseSeconds?: number;
+  frequencyResponse?: FrequencyResponseProps;
+  vocalResponse?: VocalResponseProps;
 }
 
 export const scenarioElementSchema = z.object({
@@ -89,6 +108,39 @@ export const scenarioElementSchema = z.object({
     .number()
     .nonnegative()
     .finite()
+    .nullish()
+    .transform((value) => value ?? undefined),
+  frequencyResponse: z
+    .object({
+      minHz: z.number().nonnegative().finite(),
+      maxHz: z.number().positive().finite(),
+      operation: z.enum(["scale", "rotation", "translation", "wiggle"]).nullish().transform((value) => value ?? undefined),
+      transition: z.enum(["linear", "ease", "ease-in", "ease-out", "ease-in-out"]).nullish().transform((value) => value ?? undefined),
+      value: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      translationX: z.number().finite().nullish().transform((value) => value ?? undefined),
+      translationY: z.number().finite().nullish().transform((value) => value ?? undefined),
+      translationZ: z.number().finite().nullish().transform((value) => value ?? undefined),
+      repetitions: z.number().int().positive().nullish().transform((value) => value ?? undefined),
+      strength: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      attackSeconds: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      releaseSeconds: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+    })
+    .refine((value) => value.maxHz > value.minHz)
+    .nullish()
+    .transform((value) => value ?? undefined),
+  vocalResponse: z
+    .object({
+      operation: z.enum(["scale", "rotation", "translation", "wiggle"]).nullish().transform((value) => value ?? undefined),
+      transition: z.enum(["linear", "ease", "ease-in", "ease-out", "ease-in-out"]).nullish().transform((value) => value ?? undefined),
+      value: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      translationX: z.number().finite().nullish().transform((value) => value ?? undefined),
+      translationY: z.number().finite().nullish().transform((value) => value ?? undefined),
+      translationZ: z.number().finite().nullish().transform((value) => value ?? undefined),
+      repetitions: z.number().int().positive().nullish().transform((value) => value ?? undefined),
+      strength: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      attackSeconds: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+      releaseSeconds: z.number().nonnegative().finite().nullish().transform((value) => value ?? undefined),
+    })
     .nullish()
     .transform((value) => value ?? undefined),
   operations: z.array(scenarioElementOperationSchema).default([]),

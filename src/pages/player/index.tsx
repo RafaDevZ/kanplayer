@@ -1,6 +1,8 @@
-import { useEffect, type CSSProperties } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Icons } from "../../components/Icons";
 import { usePlayer } from "../../hooks/player/usePlayer";
+import { connectVocalAnalysis, setAudioOutputMode, setVocalOutputVolume } from "../../hooks/player/audioAnalysis";
 import * as PL from "./styles";
 
 const formatTime = (seconds: number) => {
@@ -20,6 +22,12 @@ export interface PlayerProps {
   onDurationChange?: (duration: number) => void;
   onTimeChange?: (currentTime: number) => void;
   enableSpacebarShortcut?: boolean;
+  vocalExtraction?: {
+    extracted: boolean;
+    processing?: boolean;
+    onExtract: () => void;
+  };
+  vocalAnalysisPath?: string;
 }
 
 export default function Player({
@@ -29,6 +37,8 @@ export default function Player({
   onDurationChange,
   onTimeChange,
   enableSpacebarShortcut = false,
+  vocalExtraction,
+  vocalAnalysisPath,
 }: PlayerProps) {
   const {
     activeAudio,
@@ -44,22 +54,78 @@ export default function Player({
     volume,
     currentTime,
     duration,
+    audioRef,
   } = usePlayer(audio, showManager, {
     seekTime,
     onDurationChange,
     onTimeChange,
   });
+  const vocalAudioRef = useRef<HTMLAudioElement>(null);
+  const [audioOutputMode, setAudioOutputModeState] = useState<"music" | "vocal">("music");
+  const syncAndPlayVocal = () => {
+    const mainAudio = audioRef.current;
+    const vocalAudio = vocalAudioRef.current;
+    if (!mainAudio || !vocalAudio || !vocalAnalysisPath) return;
+    vocalAudio.currentTime = mainAudio.currentTime;
+    void vocalAudio.play().catch(() => undefined);
+  };
+  const handlePlaybackToggle = () => {
+    // Inicia ambos dentro do mesmo gesto do usuário. Em WebView isso evita
+    // que o play do áudio auxiliar seja bloqueado como autoplay.
+    if (audioRef.current?.paused && vocalAnalysisPath) syncAndPlayVocal();
+    togglePlayback();
+  };
+
+  useEffect(() => {
+    if (!vocalAnalysisPath && audioOutputMode === "vocal") setAudioOutputModeState("music");
+  }, [audioOutputMode, vocalAnalysisPath]);
+
+  useEffect(() => {
+    setAudioOutputMode(audioOutputMode);
+  }, [audioOutputMode, vocalAnalysisPath]);
+
+  useEffect(() => {
+    setVocalOutputVolume(volume.value);
+  }, [volume.value]);
+
+  useEffect(() => {
+    const vocalAudio = vocalAudioRef.current;
+    if (!vocalAudio || !vocalAnalysisPath) return;
+    vocalAudio.load();
+  }, [vocalAnalysisPath]);
+
+  useEffect(() => {
+    const mainAudio = audioRef.current;
+    const vocalAudio = vocalAudioRef.current;
+    if (!mainAudio || !vocalAudio || !vocalAnalysisPath) return;
+    let frame = 0;
+    const sync = () => {
+      if (Math.abs(vocalAudio.currentTime - mainAudio.currentTime) > 0.04) {
+        vocalAudio.currentTime = mainAudio.currentTime;
+      }
+      frame = requestAnimationFrame(sync);
+    };
+    if (isPlaying) {
+      vocalAudio.currentTime = mainAudio.currentTime;
+      void vocalAudio.play();
+      frame = requestAnimationFrame(sync);
+    } else {
+      vocalAudio.pause();
+      vocalAudio.currentTime = mainAudio.currentTime;
+    }
+    return () => cancelAnimationFrame(frame);
+  }, [audioRef, isPlaying, vocalAnalysisPath]);
 
   useEffect(() => {
     if (!enableSpacebarShortcut) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Space" || event.repeat) return;
       event.preventDefault();
-      togglePlayback();
+      handlePlaybackToggle();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enableSpacebarShortcut, togglePlayback]);
+  }, [enableSpacebarShortcut, handlePlaybackToggle]);
 
   return (
     <PL.Body>
@@ -67,7 +133,28 @@ export default function Player({
         key={activeAudio?.path}
         preload="metadata"
         {...audioProps}
+        onPlay={() => {
+          audioProps.onPlay();
+          syncAndPlayVocal();
+        }}
       />
+      {vocalAnalysisPath && (
+        <PL.PlayerAudio
+          ref={vocalAudioRef}
+          preload="auto"
+          crossOrigin="anonymous"
+          src={convertFileSrc(vocalAnalysisPath)}
+          onLoadedMetadata={(event) => {
+            const vocalAudio = event.currentTarget;
+            connectVocalAnalysis(vocalAudio);
+            const mainAudio = audioRef.current;
+            if (isPlaying && mainAudio) {
+              vocalAudio.currentTime = mainAudio.currentTime;
+              void vocalAudio.play();
+            }
+          }}
+        />
+      )}
       {showManager && (
         <PL.ListContainer $open={managerOpen}>
           <PL.TrackList>
@@ -125,11 +212,37 @@ export default function Player({
             type="button"
             disabled={!activeAudio}
             aria-label={isPlaying ? "Pausar música" : "Tocar música"}
-            onClick={togglePlayback}
+            onClick={handlePlaybackToggle}
           >
             {isPlaying ? Icons.pauseIcon : Icons.playIcon}
           </PL.PlayerControlButton>
+          <PL.AudioModeControl>
+            <span>Música</span>
+            <PL.AudioModeToggle
+              type="button"
+              $active={audioOutputMode === "vocal"}
+              disabled={!vocalAnalysisPath}
+              aria-label="Saída de áudio: música ou somente vocal"
+              aria-pressed={audioOutputMode === "vocal"}
+              onClick={() => setAudioOutputModeState((mode) => {
+                const nextMode = mode === "music" ? "vocal" : "music";
+                setAudioOutputMode(nextMode);
+                if (nextMode === "vocal" && isPlaying) syncAndPlayVocal();
+                return nextMode;
+              })}
+            />
+            <span>Vocal only</span>
+          </PL.AudioModeControl>
         </PL.PlayerControls>
+        {vocalExtraction && (
+          <PL.VocalExtractionButton
+            type="button"
+            disabled={!activeAudio || vocalExtraction.extracted || vocalExtraction.processing}
+            onClick={vocalExtraction.onExtract}
+          >
+            {vocalExtraction.extracted ? "Vocal extraído" : vocalExtraction.processing ? "Extraindo vocal..." : "Extrair vocal da música"}
+          </PL.VocalExtractionButton>
+        )}
         <PL.VolumeContainer>
           <PL.TimelineInput
             style={{ "--progress": `${volume.progress}%` } as CSSProperties}

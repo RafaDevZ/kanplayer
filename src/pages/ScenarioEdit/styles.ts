@@ -1,5 +1,5 @@
 import styled from "styled-components";
-import { HeaderBlueprint } from "../../components/DefaultComponents/styles";
+import { DftScroll, HeaderBlueprint } from "../../components/DefaultComponents/styles";
 
 type TransformHandlePosition =
   | "north-west"
@@ -77,7 +77,7 @@ export const Container = styled.div`
   min-height: 0;
   display: flex;
   gap: 4px;
-  padding: 10px 0 0;
+  padding: 10px;
   box-sizing: border-box;
 `;
 
@@ -299,6 +299,7 @@ export const ScenarioElement = styled.div<{
   $rotation: number;
   $responseRotation: number;
   $isSelected: boolean;
+  $layerZIndex: number;
 }>`
   position: absolute;
   left: 0;
@@ -312,6 +313,7 @@ export const ScenarioElement = styled.div<{
     rotate(${({ $rotation, $responseRotation }) => $rotation + $responseRotation}deg)
     translate3d(${({ $pivotLocalX }) => -$pivotLocalX}px, ${({ $pivotLocalY }) => -$pivotLocalY}px, 0);
   transform-origin: top left;
+  z-index: ${({ $layerZIndex }) => $layerZIndex};
   cursor: pointer;
 `;
 
@@ -354,8 +356,10 @@ export const TransformBox = styled.div<{ $zoom: number }>`
   inset: ${({ $zoom }) => -10 / $zoom}px;
   box-sizing: border-box;
   border: ${({ $zoom }) => 1 / $zoom}px dashed var(--white);
-  pointer-events: auto;
-  cursor: move;
+  // A caixa não deve bloquear o hit-test do elemento que estiver visualmente
+  // acima dela. Apenas handles e pivô (filhos com pointer-events próprios)
+  // precisam capturar o ponteiro.
+  pointer-events: none;
 `;
 
 export const SelectedElementOutline = styled.div<{ $zoom: number }>`
@@ -570,7 +574,7 @@ export const StemBindingPanel = styled.div`
   }
 `;
 
-export const OperationListHeader = styled.div`
+export const OperationListHeader = styled.div<{ $accent?: string }>`
   height: 24px;
   display: flex;
   align-items: center;
@@ -578,6 +582,7 @@ export const OperationListHeader = styled.div`
   color: var(--white);
   font-size: 12px;
   background-color: transparent !important;
+  color: ${({ $accent }) => ($accent === "frequency" ? "var(--purple-100)" : "var(--white)")};
 `;
 
 export const OperationAddButton = styled.button`
@@ -610,6 +615,73 @@ export const OperationItem = styled.button`
   cursor: pointer;
 `;
 
+export const FrequencyWindowBody = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  color: var(--white);
+`;
+
+export const FrequencyForm = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  ${DftScroll}
+`;
+
+export const FrequencySpectrum = styled.div`
+  position: relative;
+  height: 60px;
+  min-height: 60px;
+  flex-shrink: 0;
+  border: 1px solid var(--black-400);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--black-200);
+
+  canvas { width: 100%; height: 100%; display: block; }
+`;
+
+export const FrequencyRange = styled.div`
+  position: absolute;
+  inset-block: 0;
+  background: rgba(199, 125, 255, 0.22);
+  border-inline: 1px solid var(--purple-100);
+  pointer-events: none;
+`;
+
+export const FrequencyHandle = styled.button`
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  transform: translateX(-50%);
+  background: var(--purple-100);
+  cursor: ew-resize;
+  touch-action: none;
+`;
+
+export const FrequencyLabels = styled.div`
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+`;
+
+export const FrequencyOperationItem = styled(OperationItem)`
+  color: var(--purple-100);
+`;
+
 export const OperationWindowBody = styled.div`
   display: flex;
   flex-direction: column;
@@ -618,6 +690,28 @@ export const OperationWindowBody = styled.div`
   box-sizing: border-box;
   min-height: 100%;
   flex: 1;
+`;
+
+export const VocalExtractionStatus = styled.div`
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--white);
+  box-sizing: border-box;
+
+  span {
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  strong {
+    color: var(--blue-100);
+    font-size: 14px;
+    line-height: 18px;
+  }
 `;
 
 export const OperationActions = styled.div`

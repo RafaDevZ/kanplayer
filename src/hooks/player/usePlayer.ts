@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import localforage from "localforage";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { connectAudioAnalysis, resumeAudioAnalysis } from "./audioAnalysis";
 
 export type AudioFile = {
   name: string;
@@ -190,6 +191,7 @@ export function usePlayer(
       src: activeAudio ? convertFileSrc(activeAudio.path) : undefined,
       onLoadedMetadata: (event: ChangeEvent<HTMLAudioElement>) => {
         const audio = event.currentTarget;
+        connectAudioAnalysis(audio);
         if (isVolumeLoaded) audio.volume = volume;
         setDuration(audio.duration);
         syncRef.current?.onDurationChange?.(audio.duration);
@@ -207,6 +209,7 @@ export function usePlayer(
         updateTimelineVisual(audio.currentTime, audio.duration);
       },
       onPlay: () => {
+        resumeAudioAnalysis();
         if (audioRef.current) {
           updatePlaybackAnchor(audioRef.current.currentTime);
           updateTimelineVisual(

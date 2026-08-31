@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -26,7 +27,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the vendored Ritrace pipeline")
     parser.add_argument("--audio", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--vocal-only", action="store_true")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--demucs-python", default=sys.executable)
     parser.add_argument("--mdx-overlap", type=int, default=8)
@@ -71,11 +73,11 @@ def main() -> None:
     arguments = parse_arguments()
     audio = arguments.audio.resolve()
     output = arguments.output.resolve()
-    checkpoint = arguments.checkpoint.resolve()
+    checkpoint = arguments.checkpoint.resolve() if arguments.checkpoint else None
 
     if not audio.is_file():
         raise FileNotFoundError(f"audio file not found: {audio}")
-    if not checkpoint.is_file():
+    if not arguments.vocal_only and (checkpoint is None or not checkpoint.is_file()):
         raise FileNotFoundError(f"MDX checkpoint not found: {checkpoint}")
     minimum_confidence = {
         "kick": arguments.kick_min_confidence,
@@ -96,12 +98,17 @@ def main() -> None:
         sequence_resolution = workspace / "sequence-resolution-audit.json"
         kick_audit = workspace / "kick-collision-audit.json"
 
-        progress("Separando bateria e vocais", 0, started_at)
+        progress("Extraindo vocal", 0, started_at)
         run([
             arguments.demucs_python,
             str(SCRIPTS / "separate_stems.py"),
             "--audio", str(audio), "--output", str(stems), "--device", arguments.device,
+            "--stems", *( ["vocals"] if arguments.vocal_only else ["drums", "vocals"] ),
         ])
+        if arguments.vocal_only:
+            shutil.copyfile(stems / "vocals.wav", output / "vocals.wav")
+            progress("Concluído", 100, started_at)
+            return
         progress("Separando kick, snare e hihat", 15, started_at)
         run([
             sys.executable,

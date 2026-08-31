@@ -81,12 +81,14 @@ pub fn render(app: AppHandle, registry: RitraceJobRegistry, input: RitraceRender
     let checkpoint = std::env::var("KANPLAYER_RITRACE_CHECKPOINT")
         .ok()
         .or(runtime_config.checkpoint)
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-        "Configure KANPLAYER_RITRACE_CHECKPOINT com o caminho do checkpoint MDX23C do RiTrace.".to_string()
-    })?;
-    if !checkpoint.is_file() {
-        return Err("O checkpoint configurado em KANPLAYER_RITRACE_CHECKPOINT não foi encontrado.".to_string());
+        .map(PathBuf::from);
+    if !input.vocal_only && checkpoint.is_none() {
+        return Err("Configure KANPLAYER_RITRACE_CHECKPOINT com o caminho do checkpoint MDX23C do RiTrace.".to_string());
+    }
+    if let Some(checkpoint) = &checkpoint {
+        if !checkpoint.is_file() {
+            return Err("O checkpoint configurado em KANPLAYER_RITRACE_CHECKPOINT não foi encontrado.".to_string());
+        }
     }
 
     let run_id = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
@@ -105,21 +107,18 @@ pub fn render(app: AppHandle, registry: RitraceJobRegistry, input: RitraceRender
         .ok()
         .or(runtime_config.device)
         .unwrap_or_else(|| "cuda".to_string());
-    let mut child = Command::new(python)
-        .args(["-u", runtime.join("run_analysis.py").to_string_lossy().as_ref()])
-        .args(["--audio", audio.to_string_lossy().as_ref()])
-        .args(["--output", output.to_string_lossy().as_ref()])
-        .args(["--checkpoint", checkpoint.to_string_lossy().as_ref()])
-        .args(["--device", &device])
-        .args(["--demucs-python", &demucs_python])
-        .args(["--kick-min-confidence", &input.kick_min_confidence.to_string()])
-        .args(["--snare-min-confidence", &input.snare_min_confidence.to_string()])
-        .args(["--hihat-min-confidence", &input.hihat_min_confidence.to_string()])
-        .current_dir(&runtime)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| format!("Não foi possível iniciar o RiTrace: {error}"))?;
+    let mut child = if input.vocal_only {
+        Command::new(&python)
+            .args(["-u", runtime.join("run_analysis.py").to_string_lossy().as_ref(), "--audio", audio.to_string_lossy().as_ref(), "--output", output.to_string_lossy().as_ref(), "--device", &device, "--demucs-python", &demucs_python, "--vocal-only"])
+            .current_dir(&runtime).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()
+            .map_err(|error| format!("Não foi possível iniciar o RiTrace: {error}"))?
+    } else {
+        let checkpoint = checkpoint.as_ref().expect("checkpoint validated");
+        Command::new(&python)
+            .args(["-u", runtime.join("run_analysis.py").to_string_lossy().as_ref(), "--audio", audio.to_string_lossy().as_ref(), "--output", output.to_string_lossy().as_ref(), "--checkpoint", checkpoint.to_string_lossy().as_ref(), "--device", &device, "--demucs-python", &demucs_python, "--kick-min-confidence", &input.kick_min_confidence.to_string(), "--snare-min-confidence", &input.snare_min_confidence.to_string(), "--hihat-min-confidence", &input.hihat_min_confidence.to_string()])
+            .current_dir(&runtime).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()
+            .map_err(|error| format!("Não foi possível iniciar o RiTrace: {error}"))?
+    };
     registry
         .0
         .lock()
@@ -156,6 +155,21 @@ pub fn render(app: AppHandle, registry: RitraceJobRegistry, input: RitraceRender
     if !status.success() {
         let _ = fs::remove_dir_all(&output);
         return Err(format!("O RiTrace terminou com erro (código {}).", status.code().unwrap_or(-1)));
+    }
+    if input.vocal_only {
+        let timeline_id = input.timeline_id.ok_or_else(|| "A extração vocal precisa de uma timeline válida.".to_string())?;
+        let vocals_directory = app.path().app_data_dir().map_err(|error| error.to_string())?.join("vocals");
+        fs::create_dir_all(&vocals_directory).map_err(|error| error.to_string())?;
+        let vocal_path = vocals_directory.join(format!("timeline-{timeline_id}-{run_id}.wav"));
+        fs::rename(output.join("vocals.wav"), &vocal_path).map_err(|error| format!("Não foi possível salvar o vocal extraído: {error}"))?;
+        let _ = fs::remove_dir_all(&output);
+        return Ok(RitraceRenderResult {
+            bpm: 120.0,
+            first_beat_seconds: 0.0,
+            beat_interval_seconds: 0.5,
+            events: Vec::new(),
+            vocal_path: Some(vocal_path.to_string_lossy().into_owned()),
+        });
     }
     let result = read_result(&output);
     let _ = fs::remove_dir_all(&output);
@@ -225,6 +239,7 @@ fn read_result(output: &Path) -> Result<RitraceRenderResult, String> {
             confidence: event.confidence,
             origin: event.origin.unwrap_or_else(|| "ritrace".to_string()),
         }).collect(),
+        vocal_path: None,
     })
 }
 

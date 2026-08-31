@@ -16,6 +16,7 @@ export interface TimelineProps {
   beatIntervalSeconds?: number;
   snap: string;
   followPlayhead: boolean;
+  vocalPath?: string;
   stems: TimelineStemProps[];
   events: TimelineEventProps[];
 }
@@ -41,6 +42,7 @@ export const timelineSchema = z.object({
     .transform((value) => value ?? undefined),
   snap: z.string().default("1/16"),
   followPlayhead: z.boolean().default(false),
+  vocalPath: z.string().nullish().transform((value) => value ?? undefined),
   stems: z.array(timelineStemSchema).default(() => defaultTimelineStems),
   events: z.array(timelineEventSchema).default([]),
 });

@@ -92,6 +92,7 @@ pub struct TimelineSaveInput {
     pub beat_interval_seconds: Option<f64>,
     pub snap: String,
     pub follow_playhead: bool,
+    pub vocal_path: Option<String>,
     pub stems: Vec<TimelineStemInput>,
     pub events: Vec<TimelineEventInput>,
 }
@@ -118,6 +119,8 @@ pub struct Timeline {
     pub beat_interval_seconds: Option<f64>,
     pub snap: String,
     pub follow_playhead: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocal_path: Option<String>,
     pub stems: Vec<TimelineStem>,
     pub events: Vec<TimelineEvent>,
 }
@@ -130,6 +133,9 @@ pub struct RitraceRenderInput {
     pub kick_min_confidence: f64,
     pub snare_min_confidence: f64,
     pub hihat_min_confidence: f64,
+    #[serde(default)]
+    pub vocal_only: bool,
+    pub timeline_id: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -148,6 +154,8 @@ pub struct RitraceRenderResult {
     pub first_beat_seconds: f64,
     pub beat_interval_seconds: f64,
     pub events: Vec<RitraceEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocal_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -204,6 +212,10 @@ pub struct ScenarioElementInput {
     pub stem_response_value: Option<f64>,
     pub stem_response_attack_seconds: Option<f64>,
     pub stem_response_release_seconds: Option<f64>,
+    #[serde(default)]
+    pub frequency_response: Option<serde_json::Value>,
+    #[serde(default)]
+    pub vocal_response: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -240,6 +252,10 @@ pub struct ScenarioElement {
     pub stem_response_attack_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stem_response_release_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_response: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocal_response: Option<serde_json::Value>,
 }
 
 fn default_pivot() -> f64 { 0.5 }
