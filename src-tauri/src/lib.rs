@@ -28,6 +28,7 @@ pub fn run() {
             commands::update_stem,
             commands::delete_stem,
             commands::list_scenarios,
+            commands::get_scenario,
             commands::create_scenario,
             commands::update_scenario,
             commands::delete_scenario,

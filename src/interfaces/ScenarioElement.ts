@@ -59,6 +59,8 @@ export interface ScenarioElementProps {
   rotation: number;
   pivotX: number;
   pivotY: number;
+  visible: boolean;
+  opacity: number;
   color: string;
   imageData?: string;
   /** URL local apenas para preview durante a sessão; não é persistida. */
@@ -87,6 +89,8 @@ export const scenarioElementSchema = z.object({
   rotation: z.number().finite().default(0),
   pivotX: z.number().min(0).max(1).finite().default(0.5),
   pivotY: z.number().min(0).max(1).finite().default(0.5),
+  visible: z.boolean().nullish().transform((value) => value ?? true),
+  opacity: z.number().min(0).max(1).finite().nullish().transform((value) => value ?? 1),
   color: z.string().trim().min(1).default("#00a8ff"),
   imageData: z.string().nullish().transform((value) => value ?? undefined),
   imageWidth: z.number().positive().finite().nullish().transform((value) => value ?? undefined),

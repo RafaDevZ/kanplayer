@@ -129,6 +129,8 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 rotation REAL NOT NULL,
                 pivot_x REAL NOT NULL DEFAULT 0.5 CHECK (pivot_x >= 0 AND pivot_x <= 1),
                 pivot_y REAL NOT NULL DEFAULT 0.5 CHECK (pivot_y >= 0 AND pivot_y <= 1),
+                visible INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0, 1)),
+                opacity REAL NOT NULL DEFAULT 1 CHECK (opacity >= 0 AND opacity <= 1),
                 color TEXT NOT NULL DEFAULT '#00a8ff',
                 image_data TEXT,
                 image_width REAL,
@@ -231,6 +233,24 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
                 )
                 .map_err(|error| format!("Não foi possível atualizar o pivô dos elementos do cenário: {error}"))?;
         }
+    }
+
+    if !columns.iter().any(|column| column == "visible") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN visible INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0, 1))",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar a visibilidade dos elementos do cenário: {error}"))?;
+    }
+
+    if !columns.iter().any(|column| column == "opacity") {
+        connection
+            .execute(
+                "ALTER TABLE scenario_elements ADD COLUMN opacity REAL NOT NULL DEFAULT 1 CHECK (opacity >= 0 AND opacity <= 1)",
+                [],
+            )
+            .map_err(|error| format!("Não foi possível atualizar a opacidade dos elementos do cenário: {error}"))?;
     }
 
     for (column, definition) in [("image_data", "TEXT"), ("image_width", "REAL"), ("image_height", "REAL")] {
@@ -553,6 +573,7 @@ mod tests {
             beat_interval_seconds: created_timeline.beat_interval_seconds,
             snap: created_timeline.snap,
             follow_playhead: created_timeline.follow_playhead,
+            vocal_path: created_timeline.vocal_path,
             stems: vec![TimelineStemInput {
                 id: Some(created_stem.id),
                 name: updated_stem.name,

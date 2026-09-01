@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent, type WheelEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent, type RefCallback, type RefObject, type WheelEvent } from "react";
 import { Icons } from "../../components/Icons";
 import Dropdown from "../../components/Dropdown";
 import { DropdownOption } from "../../components/Dropdown/styles";
@@ -20,7 +20,7 @@ import type {
   StemResponseOperation,
   StemResponseTransition,
 } from "../../interfaces/ScenarioElement";
-import { useScenarios, useUpdateScenario } from "../../queries/useScenarios";
+import { useScenario, useUpdateScenario } from "../../queries/useScenarios";
 import { useStems } from "../../queries/useStems";
 import { useTimelines, useUpdateTimeline } from "../../queries/useTimelines";
 import { useRitraceRender } from "../../queries/useRitrace";
@@ -46,6 +46,7 @@ interface ElementTransformDragProps {
   startAngle?: number;
   isAspectUnlocked: boolean;
   pivotWorld?: { x: number; y: number };
+  guideTargets: Array<{ id: string; bounds: ElementGeometry }>;
 }
 interface LayerSwapResult {
   draggableData: { from: unknown; to: unknown };
@@ -58,6 +59,25 @@ interface MarqueeSelection {
   pointerId: number;
   start: { x: number; y: number };
   current: { x: number; y: number };
+}
+
+interface ElementGeometry {
+  width: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
+}
+
+interface ScenarioPointerMove {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  shiftKey: boolean;
+  ctrlKey: boolean;
 }
 
 const circleBaseRadius = 20;
@@ -134,6 +154,205 @@ interface ElementResponse {
   translationZ: number;
 }
 
+const defaultElementResponse: ElementResponse = {
+  scale: 1,
+  rotation: 0,
+  translationX: 0,
+  translationY: 0,
+  translationZ: 0,
+};
+
+const hasElementResponse = (element: ScenarioElementProps) =>
+  element.operations.some((operation) => Boolean(operation.operation))
+  || Boolean(element.frequencyResponse?.operation)
+  || Boolean(element.vocalResponse?.operation);
+
+type ElementResponseStyle = CSSProperties & {
+  [property: `--scenario-${string}`]: string;
+};
+
+const getElementResponseStyle = (
+  element: ScenarioElementProps,
+  response: ElementResponse,
+): ElementResponseStyle => {
+  const { width, height } = getElementDimensions(element);
+  const radians = (element.rotation * Math.PI) / 180;
+  const localPivotX = (element.pivotX - 0.5) * width;
+  const localPivotY = (element.pivotY - 0.5) * height;
+  const pivotWorldX = element.x + localPivotX * Math.cos(radians) - localPivotY * Math.sin(radians);
+  const pivotWorldY = element.y + localPivotX * Math.sin(radians) + localPivotY * Math.cos(radians);
+  return {
+    "--scenario-element-width": `${width * response.scale}px`,
+    "--scenario-element-height": `${height * response.scale}px`,
+    "--scenario-element-x": `${pivotWorldX + response.translationX}px`,
+    "--scenario-element-y": `${pivotWorldY + response.translationY}px`,
+    "--scenario-element-z": `${response.translationZ}px`,
+    "--scenario-element-rotation": `${element.rotation + response.rotation}deg`,
+    "--scenario-element-pivot-x": `${-element.pivotX * width * response.scale}px`,
+    "--scenario-element-pivot-y": `${-element.pivotY * height * response.scale}px`,
+  };
+};
+
+const applyElementResponseStyle = (node: HTMLElement, style: ElementResponseStyle) => {
+  node.style.setProperty("--scenario-element-width", style["--scenario-element-width"]);
+  node.style.setProperty("--scenario-element-height", style["--scenario-element-height"]);
+  node.style.setProperty("--scenario-element-x", style["--scenario-element-x"]);
+  node.style.setProperty("--scenario-element-y", style["--scenario-element-y"]);
+  node.style.setProperty("--scenario-element-z", style["--scenario-element-z"]);
+  node.style.setProperty("--scenario-element-rotation", style["--scenario-element-rotation"]);
+  node.style.setProperty("--scenario-element-pivot-x", style["--scenario-element-pivot-x"]);
+  node.style.setProperty("--scenario-element-pivot-y", style["--scenario-element-pivot-y"]);
+};
+
+type StartElementTransform = (
+  event: PointerEvent<HTMLDivElement | HTMLButtonElement>,
+  mode: TransformMode,
+  element: ScenarioElementProps,
+) => void;
+
+interface ScenarioVisualElementViewProps {
+  element: ScenarioElementProps;
+  layerIndex: number;
+  layerCount: number;
+  selected: boolean;
+  responseRef: RefObject<Map<string, ElementResponse>>;
+  elementRef: (node: HTMLDivElement | null) => void;
+  onStartTransform: StartElementTransform;
+}
+
+const ScenarioVisualElementView = memo(function ScenarioVisualElementView({
+  element,
+  layerIndex,
+  layerCount,
+  selected,
+  responseRef,
+  elementRef,
+  onStartTransform,
+}: ScenarioVisualElementViewProps) {
+  const nodeRef = useRef<HTMLDivElement | null>(null);
+  const setNodeRef = (node: HTMLDivElement | null) => {
+    nodeRef.current = node;
+    elementRef(node);
+  };
+  const { width, height } = getElementDimensions(element);
+  const radians = (element.rotation * Math.PI) / 180;
+  const pivotOffsetX = (element.pivotX - 0.5) * width;
+  const pivotOffsetY = (element.pivotY - 0.5) * height;
+  const pivotWorldX = element.x + pivotOffsetX * Math.cos(radians) - pivotOffsetY * Math.sin(radians);
+  const pivotWorldY = element.y + pivotOffsetX * Math.sin(radians) + pivotOffsetY * Math.cos(radians);
+
+  useLayoutEffect(() => {
+    const node = nodeRef.current;
+    if (!node) return;
+    applyElementResponseStyle(
+      node,
+      getElementResponseStyle(
+        element,
+        hasElementResponse(element)
+          ? responseRef.current.get(element.id) ?? defaultElementResponse
+          : defaultElementResponse,
+      ),
+    );
+  }, [element, responseRef]);
+
+  return (
+    <SE.ScenarioElement
+      ref={setNodeRef}
+      $pivotWorldX={pivotWorldX}
+      $pivotWorldY={pivotWorldY}
+      $pivotLocalX={element.pivotX * width}
+      $pivotLocalY={element.pivotY * height}
+      $responseTranslateX={0}
+      $responseTranslateY={0}
+      $responseTranslateZ={0}
+      $scaleX={element.scaleX}
+      $scaleY={element.scaleY}
+      $responseScale={1}
+      $rotation={element.rotation}
+      $responseRotation={0}
+      $opacity={element.opacity}
+      $isSelected={selected}
+      $layerZIndex={Math.max(1, layerCount - layerIndex)}
+      onPointerDown={(event) => onStartTransform(event, "move", element)}
+    >
+      {element.imageData ? (
+        <SE.ScenarioElementImage src={element.imagePreviewUrl ?? element.imageData} alt={element.name} draggable={false} decoding="async" />
+      ) : (
+        <SE.ScenarioElementCircle $color={element.color} />
+      )}
+    </SE.ScenarioElement>
+  );
+});
+
+interface LayerUiActions {
+  rename: (elementId: string, name: string) => void;
+  toggleVisibility: (elementId: string) => void;
+  startOpacity: (event: PointerEvent<HTMLButtonElement>, element: ScenarioElementProps) => void;
+  updateOpacity: (event: PointerEvent<HTMLButtonElement>) => void;
+  stopOpacity: (event: PointerEvent<HTMLButtonElement>) => void;
+}
+
+interface ScenarioLayerRowViewProps {
+  element: ScenarioElementProps;
+  selected: boolean;
+  dragging: boolean;
+  draggableRef: RefCallback<HTMLElement>;
+  actions: LayerUiActions;
+}
+
+const ScenarioLayerRowView = memo(function ScenarioLayerRowView({
+  element,
+  selected,
+  dragging,
+  draggableRef,
+  actions,
+}: ScenarioLayerRowViewProps) {
+  return (
+    <SE.LayerRow $isVisible={element.visible}>
+      <SE.LayerItem
+        data-layer-id={element.id}
+        $isSelected={selected}
+        $isDragging={dragging}
+        ref={draggableRef}
+      >
+        <SE.LayerNameInput
+          value={element.name}
+          aria-label={`Nome do componente ${element.name}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onChange={(event) => actions.rename(element.id, event.target.value)}
+          onBlur={() => {
+            if (!element.name.trim()) actions.rename(element.id, getElementTypeLabel(element));
+          }}
+        />
+      </SE.LayerItem>
+      <SE.LayerVisibilityButton
+        type="button"
+        aria-label={element.visible ? `Ocultar ${element.name}` : `Mostrar ${element.name}`}
+        aria-pressed={element.visible}
+        title={element.visible ? "Ocultar componente" : "Mostrar componente"}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => actions.toggleVisibility(element.id)}
+      >
+        {element.visible ? Icons.eyeIcon : Icons.eyeClosedIcon}
+      </SE.LayerVisibilityButton>
+      <SE.LayerOpacityButton
+        type="button"
+        $opacity={element.opacity}
+        aria-label={`Opacidade de ${element.name}: ${Math.round(element.opacity * 100)}%`}
+        title={`Opacidade: ${Math.round(element.opacity * 100)}%. Arraste para cima ou para baixo.`}
+        onPointerDown={(event) => actions.startOpacity(event, element)}
+        onPointerMove={actions.updateOpacity}
+        onPointerUp={actions.stopOpacity}
+        onPointerCancel={actions.stopOpacity}
+      >
+        <span>{Math.round(element.opacity * 100)}%</span>
+      </SE.LayerOpacityButton>
+    </SE.LayerRow>
+  );
+});
+
 const applyResponseOperation = (
   response: ElementResponse,
   operation: Pick<ScenarioElementOperationProps, "operation" | "value" | "translationX" | "translationY" | "translationZ" | "repetitions">,
@@ -141,22 +360,22 @@ const applyResponseOperation = (
   progress = 1,
 ): ElementResponse => {
   if (operation.operation === "scale") {
-    return { ...response, scale: response.scale * (1 + ((operation.value ?? 1) - 1) * intensity) };
+    response.scale *= 1 + ((operation.value ?? 1) - 1) * intensity;
+    return response;
   }
   if (operation.operation === "rotation") {
-    return { ...response, rotation: response.rotation + (operation.value ?? 0) * intensity };
+    response.rotation += (operation.value ?? 0) * intensity;
+    return response;
   }
   const oscillation = operation.operation === "wiggle"
     ? Math.sin(progress * Math.max(1, Math.floor(operation.repetitions ?? 1)) * Math.PI * 2)
       * (progress >= 0 && progress <= 1 ? 1 - progress : 1)
       * intensity
     : intensity;
-  return {
-    ...response,
-    translationX: response.translationX + (operation.translationX ?? 0) * oscillation,
-    translationY: response.translationY + (operation.translationY ?? 0) * oscillation,
-    translationZ: response.translationZ + (operation.translationZ ?? 0) * oscillation,
-  };
+  response.translationX += (operation.translationX ?? 0) * oscillation;
+  response.translationY += (operation.translationY ?? 0) * oscillation;
+  response.translationZ += (operation.translationZ ?? 0) * oscillation;
+  return response;
 };
 
 const getElementTypeLabel = (element: ScenarioElementProps) =>
@@ -201,7 +420,7 @@ const ensureElementNames = (items: ScenarioElementProps[]) => {
 const getElementGeometry = (
   element: ScenarioElementProps,
   center = { x: element.x, y: element.y },
-) => {
+): ElementGeometry => {
   const { width, height } = getElementDimensions(element);
   const radians = (element.rotation * Math.PI) / 180;
   const extentX = Math.abs(Math.cos(radians) * width * 0.5) + Math.abs(Math.sin(radians) * height * 0.5);
@@ -219,25 +438,26 @@ const getElementGeometry = (
 };
 
 export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) {
-  const { data: scenarios } = useScenarios();
+  const { data: scenario } = useScenario(scenarioId);
   const { data: timelines } = useTimelines();
   const { data: globalStems } = useStems();
   const { mutate: updateScenario, isPending: isSavingScenario } = useUpdateScenario(
     (updatedScenario) => setElements(updatedScenario.elements),
   );
-  const scenario = scenarios?.find((scenarioData) => scenarioData.id === scenarioId);
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imagePreviewUrlsRef = useRef(new Set<string>());
+  const opacityDragRef = useRef<{ elementId: string; startY: number; startOpacity: number } | undefined>(undefined);
+  const opacityFrameRef = useRef<number | undefined>(undefined);
+  const pendingOpacityYRef = useRef<number | undefined>(undefined);
   const dragRef = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
   const elementDragRef = useRef<ElementTransformDragProps | undefined>(undefined);
   const marqueeSelectionRef = useRef<MarqueeSelection | undefined>(undefined);
+  const pendingPointerMoveRef = useRef<ScenarioPointerMove | undefined>(undefined);
+  const pointerMoveFrameRef = useRef<number | undefined>(undefined);
   const [activeTool, setActiveTool] = useState<ScenarioTool>("select");
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const [isZoomDropdownOpen, setIsZoomDropdownOpen] = useState(false);
-  const [stemResponseScales, setStemResponseScales] = useState<Record<string, number>>({});
-  const [stemResponseRotations, setStemResponseRotations] = useState<Record<string, number>>({});
-  const [stemResponseTranslations, setStemResponseTranslations] = useState<Record<string, { x: number; y: number; z: number }>>({});
   const [smartGuides, setSmartGuides] = useState<SmartGuideState>({});
   const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
   const [elements, setElements] = useState<ScenarioElementProps[]>([]);
@@ -265,7 +485,39 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const frequencySmoothedRef = useRef<Record<string, number>>({});
   const vocalSmoothedRef = useRef<Record<string, number>>({});
   const frequencyLastTimeRef = useRef<number | undefined>(undefined);
-  const responseSignatureRef = useRef("");
+  const frequencyBandIntensitiesRef = useRef(new Map<string, number>());
+  const latestEventsByStemRef = useRef(new Map<number, { timeSeconds: number } | undefined>());
+  const responseValuesRef = useRef<Array<{ id: string } & ElementResponse>>([]);
+  const responsesByElementRef = useRef(new Map<string, ElementResponse>());
+  const responseElementNodesRef = useRef(new Map<string, Set<HTMLElement>>());
+  const responseElementRefCallbacksRef = useRef(new Map<string, (node: HTMLDivElement | null) => void>());
+  const startElementTransformDelegateRef = useRef<StartElementTransform>(() => undefined);
+  const stableStartElementTransform = useRef<StartElementTransform>((event, mode, element) => {
+    startElementTransformDelegateRef.current(event, mode, element);
+  }).current;
+  const layerActionDelegateRef = useRef<{
+    select: (elementId: string, additive: boolean) => void;
+    swap: (result: LayerSwapResult, direction: "top" | "bottom") => void;
+  }>({ select: () => undefined, swap: () => undefined });
+  const layerDraggableRefsRef = useRef(new Map<string, RefCallback<HTMLElement>>());
+  const layerUiDelegateRef = useRef<LayerUiActions>({
+    rename: () => undefined,
+    toggleVisibility: () => undefined,
+    startOpacity: () => undefined,
+    updateOpacity: () => undefined,
+    stopOpacity: () => undefined,
+  });
+  const stableLayerUiActions = useRef<LayerUiActions>({
+    rename: (elementId, name) => layerUiDelegateRef.current.rename(elementId, name),
+    toggleVisibility: (elementId) => layerUiDelegateRef.current.toggleVisibility(elementId),
+    startOpacity: (event, element) => layerUiDelegateRef.current.startOpacity(event, element),
+    updateOpacity: (event) => layerUiDelegateRef.current.updateOpacity(event),
+    stopOpacity: (event) => layerUiDelegateRef.current.stopOpacity(event),
+  }).current;
+  const timelineEventIndexRef = useRef<{
+    events?: NonNullable<typeof timelines>[number]["events"];
+    byStem: Map<number, Array<{ timeSeconds: number }>>;
+  }>({ byStem: new Map() });
   const { draggable, dragPreview, dragPreviewElementRef, isLocalDragging } = useMotionDnd();
   const { mutateAsync: renderRitrace, isPending: isExtractingVocal } = useRitraceRender();
   const { mutateAsync: updateTimeline } = useUpdateTimeline();
@@ -274,6 +526,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   );
   const selectTimeline = (timelineId: number) => setSelectedTimelineId(timelineId);
   const selectedElement = elements.find((element) => element.id === selectedElementId);
+  const selectedElementIdsSet = new Set(selectedElementIds);
+  const elementLayerIndexes = new Map(elements.map((element, index) => [element.id, index]));
 
   const extractTimelineVocal = async () => {
     if (!selectedTimeline || selectedTimeline.vocalPath || isExtractingVocal) return;
@@ -321,6 +575,23 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     (operation) => operation.id === editingOperationId,
   );
   const layerElements = elements;
+  const responseElements = elements.filter((element) => element.visible && hasElementResponse(element));
+  const getResponseElementRef = (elementId: string, slot: "visual" | "control") => {
+    const callbackKey = `${slot}:${elementId}`;
+    const storedCallback = responseElementRefCallbacksRef.current.get(callbackKey);
+    if (storedCallback) return storedCallback;
+    let currentNode: HTMLDivElement | null = null;
+    const callback = (node: HTMLDivElement | null) => {
+      const nodes = responseElementNodesRef.current.get(elementId) ?? new Set<HTMLElement>();
+      if (currentNode) nodes.delete(currentNode);
+      currentNode = node;
+      if (node) nodes.add(node);
+      if (nodes.size > 0) responseElementNodesRef.current.set(elementId, nodes);
+      else responseElementNodesRef.current.delete(elementId);
+    };
+    responseElementRefCallbacksRef.current.set(callbackKey, callback);
+    return callback;
+  };
 
   const reorderLayer = (sourceId: string, targetId: string, direction: "top" | "bottom" = "top") => {
     if (sourceId === targetId) return;
@@ -342,6 +613,25 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     if (typeof sourceId !== "string" || typeof targetId !== "string") return;
     reorderLayer(sourceId, targetId, direction);
   };
+  layerActionDelegateRef.current = {
+    select: (elementId, additive) => {
+      if (additive) toggleElementSelection(elementId);
+      else selectElement(elementId);
+    },
+    swap: handleLayerSwap,
+  };
+  const getLayerDraggableRef = (elementId: string) => {
+    const storedRef = layerDraggableRefsRef.current.get(elementId);
+    if (storedRef) return storedRef;
+    const draggableRef = draggable(elementId, {
+      allowActionDrag: true,
+      onClick: ({ event }) => layerActionDelegateRef.current.select(elementId, event.ctrlKey),
+      onTopSwap: (result: LayerSwapResult) => layerActionDelegateRef.current.swap(result, "top"),
+      onBottomSwap: (result: LayerSwapResult) => layerActionDelegateRef.current.swap(result, "bottom"),
+    });
+    layerDraggableRefsRef.current.set(elementId, draggableRef);
+    return draggableRef;
+  };
 
   const updateSelectedElement = (
     updater: (element: ScenarioElementProps) => ScenarioElementProps,
@@ -354,10 +644,78 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     );
   };
 
+  const updateElementName = (elementId: string, name: string) => {
+    setElements((currentElements) => currentElements.map((element) =>
+      element.id === elementId ? { ...element, name } : element,
+    ));
+  };
+
+  const toggleElementVisibility = (elementId: string) => {
+    const element = elements.find((item) => item.id === elementId);
+    if (!element) return;
+    if (element.visible) {
+      responsesByElementRef.current.delete(elementId);
+      delete frequencySmoothedRef.current[elementId];
+      delete vocalSmoothedRef.current[elementId];
+      setSelectedElementIds((currentIds) => {
+        const nextIds = currentIds.filter((id) => id !== elementId);
+        setSelectedElementId(nextIds[nextIds.length - 1]);
+        return nextIds;
+      });
+    }
+    setElements((currentElements) => currentElements.map((item) =>
+      item.id === elementId ? { ...item, visible: !item.visible } : item,
+    ));
+  };
+
+  const startOpacityDrag = (event: PointerEvent<HTMLButtonElement>, element: ScenarioElementProps) => {
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    opacityDragRef.current = { elementId: element.id, startY: event.clientY, startOpacity: element.opacity };
+  };
+
+  const updateOpacityDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    pendingOpacityYRef.current = event.clientY;
+    if (opacityFrameRef.current !== undefined) return;
+    opacityFrameRef.current = requestAnimationFrame(() => {
+      opacityFrameRef.current = undefined;
+      const drag = opacityDragRef.current;
+      const clientY = pendingOpacityYRef.current;
+      pendingOpacityYRef.current = undefined;
+      if (!drag || clientY === undefined) return;
+      const opacity = Math.max(0, Math.min(1, drag.startOpacity + (drag.startY - clientY) / 120));
+      setElements((currentElements) => currentElements.map((element) =>
+        element.id === drag.elementId ? { ...element, opacity } : element,
+      ));
+    });
+  };
+
+  const stopOpacityDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    if (opacityFrameRef.current !== undefined) cancelAnimationFrame(opacityFrameRef.current);
+    opacityFrameRef.current = undefined;
+    const drag = opacityDragRef.current;
+    if (drag) {
+      const opacity = Math.max(0, Math.min(1, drag.startOpacity + (drag.startY - event.clientY) / 120));
+      setElements((currentElements) => currentElements.map((element) =>
+        element.id === drag.elementId ? { ...element, opacity } : element,
+      ));
+    }
+    pendingOpacityYRef.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    opacityDragRef.current = undefined;
+  };
+  layerUiDelegateRef.current = {
+    rename: updateElementName,
+    toggleVisibility: toggleElementVisibility,
+    startOpacity: startOpacityDrag,
+    updateOpacity: updateOpacityDrag,
+    stopOpacity: stopOpacityDrag,
+  };
+
   const centerSelectedElements = (axis: "horizontal" | "vertical" | "both") => {
     if (!scenario || selectedElementIds.length === 0) return;
     setElements((currentElements) => currentElements.map((element) => {
-      if (!selectedElementIds.includes(element.id)) return element;
+      if (!selectedElementIdsSet.has(element.id)) return element;
       return {
         ...element,
         x: axis === "vertical" ? element.x : scenario.width / 2,
@@ -507,22 +865,15 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
   useEffect(() => {
     if (!isFrequencyWindowVisible || !frequencyResponse) return;
-    let frame = 0;
-    let idleTimer: number | undefined;
-    let lastDrawAt = 0;
+    let updateTimer: number | undefined;
     let canvasContext: CanvasRenderingContext2D | null = null;
     const update = () => {
-      const now = performance.now();
       // A visualização não precisa acompanhar o tick de áudio a 60+ FPS. A
       // análise usada pelo cenário continua sendo atualizada no loop central;
-      // aqui limitamos apenas o desenho do modal a 30 FPS.
-      if (now - lastDrawAt < 1000 / 30) {
-        frame = requestAnimationFrame(update);
-        return;
-      }
+      // aqui agendamos somente os 30 desenhos necessários, sem manter um RAF
+      // de 60+ FPS apenas para descartar metade dos callbacks.
       const data = readFrequencySpectrum();
       if (data) {
-        lastDrawAt = now;
         const maximumHz = data.sampleRate / 2;
         if (maximumHz !== frequencyMaximumRef.current) {
           frequencyMaximumRef.current = maximumHz;
@@ -556,18 +907,13 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           }
         }
       }
-      if (isAudioAnalysisPlaying()) {
-        frame = requestAnimationFrame(update);
-      } else {
-        // Enquanto pausado, não há frames de desenho. Uma checagem esparsa
-        // permite retomar o gráfico caso o usuário dê play com a janela aberta.
-        idleTimer = window.setTimeout(update, 250);
-      }
+      // Enquanto pausado, uma checagem esparsa permite retomar o gráfico caso
+      // o usuário dê play com a janela aberta.
+      updateTimer = window.setTimeout(update, isAudioAnalysisPlaying() ? 1000 / 30 : 250);
     };
     update();
     return () => {
-      cancelAnimationFrame(frame);
-      if (idleTimer !== undefined) window.clearTimeout(idleTimer);
+      if (updateTimer !== undefined) window.clearTimeout(updateTimer);
       canvasContext = null;
     };
   }, [isFrequencyWindowVisible]);
@@ -587,6 +933,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         rotation: 0,
         pivotX: 0.5,
         pivotY: 0.5,
+        visible: true,
+        opacity: 1,
         color: "#00a8ff",
         operations: [],
       },
@@ -626,6 +974,8 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             rotation: 0,
             pivotX: 0.5,
             pivotY: 0.5,
+            visible: true,
+            opacity: 1,
             color: "#ffffff",
             imageData,
             imagePreviewUrl,
@@ -662,8 +1012,17 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
   const deleteSelectedComponent = () => {
     if (selectedElementIds.length === 0) return;
+    selectedElementIds.forEach((elementId) => {
+      layerDraggableRefsRef.current.delete(elementId);
+      responseElementNodesRef.current.delete(elementId);
+      responseElementRefCallbacksRef.current.delete(`visual:${elementId}`);
+      responseElementRefCallbacksRef.current.delete(`control:${elementId}`);
+      responsesByElementRef.current.delete(elementId);
+      delete frequencySmoothedRef.current[elementId];
+      delete vocalSmoothedRef.current[elementId];
+    });
     setElements((currentElements) =>
-      currentElements.filter((element) => !selectedElementIds.includes(element.id)),
+      currentElements.filter((element) => !selectedElementIdsSet.has(element.id)),
     );
     selectElement();
     setSmartGuides({});
@@ -692,31 +1051,61 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     // Só consulta o analyser quando existe ao menos um modulador de faixa
     // utilizável. Isso mantém o playback normal livre de trabalho de FFT.
     const hasFrequencyModulator = Boolean(
-      selectedTimeline && elements.some((element) => element.frequencyResponse?.operation),
+      selectedTimeline && responseElements.some((element) => element.frequencyResponse?.operation),
     );
     const spectrum = hasFrequencyModulator ? readFrequencySpectrum() : undefined;
-    const hasVocalModulator = Boolean(selectedTimeline?.vocalPath && elements.some((element) => element.vocalResponse?.operation));
+    const hasVocalModulator = Boolean(selectedTimeline?.vocalPath && responseElements.some((element) => element.vocalResponse?.operation));
     const vocalIntensity = hasVocalModulator ? readVocalIntensity() : 0;
+    const frequencyBandIntensities = frequencyBandIntensitiesRef.current;
+    frequencyBandIntensities.clear();
     const previousTime = frequencyLastTimeRef.current;
     const elapsedSinceLastFrame = previousTime === undefined || currentTime < previousTime
       ? 0
       : currentTime - previousTime;
     frequencyLastTimeRef.current = currentTime;
-    const latestEventsByStem = new Map<number, NonNullable<typeof selectedTimeline>["events"][number]>();
-    selectedTimeline?.events.forEach((timelineEvent) => {
-      if (timelineEvent.timeSeconds > currentTime || !timelineEvent.stemId) return;
-      const previousEvent = latestEventsByStem.get(timelineEvent.stemId);
-      if (!previousEvent || timelineEvent.timeSeconds >= previousEvent.timeSeconds) {
-        latestEventsByStem.set(timelineEvent.stemId, timelineEvent);
+    if (timelineEventIndexRef.current.events !== selectedTimeline?.events) {
+      const byStem = new Map<number, Array<{ timeSeconds: number }>>();
+      selectedTimeline?.events.forEach((event) => {
+        if (!event.stemId) return;
+        const events = byStem.get(event.stemId) ?? [];
+        events.push(event);
+        byStem.set(event.stemId, events);
+      });
+      byStem.forEach((events) => events.sort((first, second) => first.timeSeconds - second.timeSeconds));
+      timelineEventIndexRef.current = { events: selectedTimeline?.events, byStem };
+    }
+    const latestEventsByStem = latestEventsByStemRef.current;
+    latestEventsByStem.clear();
+    const getLatestEvent = (stemId?: number) => {
+      if (!stemId) return undefined;
+      if (latestEventsByStem.has(stemId)) return latestEventsByStem.get(stemId);
+      const events = timelineEventIndexRef.current.byStem.get(stemId);
+      if (!events?.length) {
+        latestEventsByStem.set(stemId, undefined);
+        return undefined;
       }
-    });
+      let low = 0;
+      let high = events.length - 1;
+      let match: { timeSeconds: number } | undefined;
+      while (low <= high) {
+        const middle = (low + high) >> 1;
+        if (events[middle].timeSeconds <= currentTime) {
+          match = events[middle];
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      latestEventsByStem.set(stemId, match);
+      return match;
+    };
     const nextResponses =
-      elements.map((element) => {
+      responseElements.map((element) => {
         const response = element.operations.reduce(
           (currentResponse, operation) => {
             if (!operation.operation) return currentResponse;
             if ((operation.operation === "scale" || operation.operation === "rotation") && operation.value === undefined) return currentResponse;
-            const event = operation.stemId ? latestEventsByStem.get(operation.stemId) : undefined;
+            const event = getLatestEvent(operation.stemId);
             const elapsed = event ? currentTime - event.timeSeconds : 0;
             const attack = operation.attackSeconds ?? 0;
             const release = operation.releaseSeconds ?? 0;
@@ -733,13 +1122,19 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
             return applyResponseOperation(currentResponse, operation, intensity, progress);
           },
-          { scale: 1, rotation: 0, translationX: 0, translationY: 0, translationZ: 0 },
+          { ...defaultElementResponse },
         );
         const frequency = element.frequencyResponse;
         const frequencyOperation = frequency?.operation;
         let frequencyForce = 0;
         if (spectrum && selectedTimeline && frequency && frequencyOperation) {
-          const rawForce = Math.min(1, getFrequencyBandIntensityFromSpectrum(spectrum, frequency.minHz, frequency.maxHz) * (frequency.strength ?? 1));
+          const bandKey = `${frequency.minHz}:${frequency.maxHz}`;
+          let bandIntensity = frequencyBandIntensities.get(bandKey);
+          if (bandIntensity === undefined) {
+            bandIntensity = getFrequencyBandIntensityFromSpectrum(spectrum, frequency.minHz, frequency.maxHz);
+            frequencyBandIntensities.set(bandKey, bandIntensity);
+          }
+          const rawForce = Math.min(1, bandIntensity * (frequency.strength ?? 1));
           const previousForce = frequencySmoothedRef.current[element.id] ?? 0;
           const duration = rawForce >= previousForce ? frequency.attackSeconds ?? 0 : frequency.releaseSeconds ?? 0;
           const smoothing = duration > 0 ? Math.min(1, elapsedSinceLastFrame / duration) : 1;
@@ -767,24 +1162,27 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           : finalResponse;
         return { id: element.id, ...responseWithVocal };
       });
-    const responseSignature = nextResponses
-      .map((response) => `${response.id}:${response.scale}:${response.rotation}:${response.translationX}:${response.translationY}:${response.translationZ}`)
-      .join("|");
-    if (responseSignature === responseSignatureRef.current) return;
-    responseSignatureRef.current = responseSignature;
-    setStemResponseScales(
-      Object.fromEntries(nextResponses.map((response) => [response.id, response.scale])),
-    );
-    setStemResponseRotations(
-      Object.fromEntries(nextResponses.map((response) => [response.id, response.rotation])),
-    );
-    setStemResponseTranslations(
-      Object.fromEntries(nextResponses.map((response) => [response.id, {
-        x: response.translationX,
-        y: response.translationY,
-        z: response.translationZ,
-      }])),
-    );
+    const previousResponses = responseValuesRef.current;
+    const responsesAreEqual = previousResponses.length === nextResponses.length && nextResponses.every((response, index) => {
+      const previous = previousResponses[index];
+      return previous?.id === response.id
+        && previous.scale === response.scale
+        && previous.rotation === response.rotation
+        && previous.translationX === response.translationX
+        && previous.translationY === response.translationY
+        && previous.translationZ === response.translationZ;
+    });
+    if (responsesAreEqual) return;
+    responseValuesRef.current = nextResponses;
+    const responsesByElement = responsesByElementRef.current;
+    responsesByElement.clear();
+    nextResponses.forEach(({ id, ...response }, index) => {
+      responsesByElement.set(id, response);
+      const element = responseElements[index];
+      if (!element) return;
+      const style = getElementResponseStyle(element, response);
+      responseElementNodesRef.current.get(id)?.forEach((node) => applyElementResponseStyle(node, style));
+    });
   };
 
   const getScenarioPoint = (clientX: number, clientY: number) => {
@@ -831,9 +1229,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const getRenderedElementProps = (element: ScenarioElementProps, layerIndex = 0) => {
-    const responseScale = stemResponseScales[element.id] ?? 1;
-    const responseRotation = stemResponseRotations[element.id] ?? 0;
-    const responseTranslation = stemResponseTranslations[element.id] ?? { x: 0, y: 0, z: 0 };
+    const response = hasElementResponse(element)
+      ? responsesByElementRef.current.get(element.id) ?? defaultElementResponse
+      : defaultElementResponse;
+    const responseScale = response.scale;
+    const responseRotation = response.rotation;
+    const responseTranslation = { x: response.translationX, y: response.translationY, z: response.translationZ };
     const renderedPivotWorld = getElementPivotWorld(element);
     const { width: baseWidth, height: baseHeight } = getElementDimensions(element);
     return {
@@ -849,8 +1250,10 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       $responseScale: responseScale,
       $rotation: element.rotation,
       $responseRotation: responseRotation,
-      $isSelected: selectedElementIds.includes(element.id),
+      $opacity: element.opacity,
+      $isSelected: selectedElementIdsSet.has(element.id),
       $layerZIndex: Math.max(1, elements.length - layerIndex),
+      style: getElementResponseStyle(element, response),
     };
   };
 
@@ -911,6 +1314,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
   useEffect(
     () => () => {
+      if (pointerMoveFrameRef.current !== undefined) cancelAnimationFrame(pointerMoveFrameRef.current);
+      if (opacityFrameRef.current !== undefined) cancelAnimationFrame(opacityFrameRef.current);
+      pointerMoveFrameRef.current = undefined;
+      pendingPointerMoveRef.current = undefined;
+      opacityFrameRef.current = undefined;
+      pendingOpacityYRef.current = undefined;
       imagePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       imagePreviewUrlsRef.current.clear();
     },
@@ -928,7 +1337,11 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     frequencySmoothedRef.current = {};
     vocalSmoothedRef.current = {};
     frequencyLastTimeRef.current = undefined;
-    responseSignatureRef.current = "";
+    responseValuesRef.current = [];
+    responsesByElementRef.current.clear();
+    responseElementNodesRef.current.clear();
+    responseElementRefCallbacksRef.current.clear();
+    layerDraggableRefsRef.current.clear();
   }, [scenario?.id]);
 
   useEffect(() => {
@@ -1006,7 +1419,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
-  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+  const processPointerMove = (event: ScenarioPointerMove) => {
     const marquee = marqueeSelectionRef.current;
     if (marquee?.pointerId === event.pointerId) {
       const point = getScenarioPoint(event.clientX, event.clientY);
@@ -1020,6 +1433,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       const bottom = Math.max(nextSelection.start.y, point.y);
       const selectedIds = elements
         .filter((element) => {
+          if (!element.visible) return false;
           const bounds = getElementGeometry(element);
           return bounds.left >= left && bounds.right <= right && bounds.top >= top && bounds.bottom <= bottom;
         })
@@ -1096,26 +1510,30 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         const nextGuides: SmartGuideState = {};
         if (!event.ctrlKey && smartGuidesEnabled) {
           const movingBounds = getElementGeometry(startTransform, position);
-          const otherElements = elements.filter((element) => element.id !== startTransform.id);
           const tolerance = 8 / view.zoom;
-          const xCandidates = otherElements.flatMap((element) => {
-            const bounds = getElementGeometry(element);
-            return [
+          let xMatch: { value: number; offset: number; distance: number } | undefined;
+          let yMatch: { value: number; offset: number; distance: number } | undefined;
+          for (const target of activeElementDrag.guideTargets) {
+            const bounds = target.bounds;
+            const xCandidates = [
               { value: bounds.left, offset: movingBounds.left - position.x },
               { value: bounds.right, offset: movingBounds.right - position.x },
               { value: bounds.centerX, offset: movingBounds.centerX - position.x },
-            ].map((candidate) => ({ ...candidate, distance: Math.abs((position.x + candidate.offset) - candidate.value) }));
-          }).sort((first, second) => first.distance - second.distance);
-          const yCandidates = otherElements.flatMap((element) => {
-            const bounds = getElementGeometry(element);
-            return [
+            ];
+            for (const candidate of xCandidates) {
+              const distance = Math.abs((position.x + candidate.offset) - candidate.value);
+              if (!xMatch || distance < xMatch.distance) xMatch = { ...candidate, distance };
+            }
+            const yCandidates = [
               { value: bounds.top, offset: movingBounds.top - position.y },
               { value: bounds.bottom, offset: movingBounds.bottom - position.y },
               { value: bounds.centerY, offset: movingBounds.centerY - position.y },
-            ].map((candidate) => ({ ...candidate, distance: Math.abs((position.y + candidate.offset) - candidate.value) }));
-          }).sort((first, second) => first.distance - second.distance);
-          const xMatch = xCandidates[0];
-          const yMatch = yCandidates[0];
+            ];
+            for (const candidate of yCandidates) {
+              const distance = Math.abs((position.y + candidate.offset) - candidate.value);
+              if (!yMatch || distance < yMatch.distance) yMatch = { ...candidate, distance };
+            }
+          }
           if (xMatch && xMatch.distance <= tolerance) {
             position = { ...position, x: position.x + (xMatch.value - (position.x + xMatch.offset)) };
             nextGuides.vertical = xMatch.value;
@@ -1192,17 +1610,26 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         }
 
         const guideTolerance = 8 / view.zoom;
-        const otherElements = elements.filter((element) => element.id !== startTransform.id);
         const canSnapWidth = handle.includes("east") || handle.includes("west");
         const canSnapHeight = handle.includes("north") || handle.includes("south");
-        const dimensionMatches = otherElements.flatMap((element) => [
-          { axis: "width" as const, value: getElementGeometry(element).width, distance: Math.abs(width - getElementGeometry(element).width) },
-          { axis: "height" as const, value: getElementGeometry(element).height, distance: Math.abs(height - getElementGeometry(element).height) },
-        ]).filter((match) => match.axis === "width" ? canSnapWidth : canSnapHeight)
-          .sort((first, second) => first.distance - second.distance);
-        const closestMatch = smartGuidesEnabled && !activeElementDrag.isAspectUnlocked
-          ? dimensionMatches[0]
-          : undefined;
+        let closestMatch: { axis: "width" | "height"; value: number; distance: number } | undefined;
+        if (smartGuidesEnabled && !activeElementDrag.isAspectUnlocked) {
+          for (const target of activeElementDrag.guideTargets) {
+            const bounds = target.bounds;
+            if (canSnapWidth) {
+              const distance = Math.abs(width - bounds.width);
+              if (!closestMatch || distance < closestMatch.distance) {
+                closestMatch = { axis: "width", value: bounds.width, distance };
+              }
+            }
+            if (canSnapHeight) {
+              const distance = Math.abs(height - bounds.height);
+              if (!closestMatch || distance < closestMatch.distance) {
+                closestMatch = { axis: "height", value: bounds.height, distance };
+              }
+            }
+          }
+        }
         const nextGuides: SmartGuideState = {};
         if (closestMatch && closestMatch.distance <= guideTolerance) {
           if (closestMatch.axis === "width") {
@@ -1297,7 +1724,35 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     dragRef.current = { ...drag, x, y };
   };
 
+  const flushPointerMove = () => {
+    if (pointerMoveFrameRef.current !== undefined) {
+      cancelAnimationFrame(pointerMoveFrameRef.current);
+      pointerMoveFrameRef.current = undefined;
+    }
+    const pendingMove = pendingPointerMoveRef.current;
+    pendingPointerMoveRef.current = undefined;
+    if (pendingMove) processPointerMove(pendingMove);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    pendingPointerMoveRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+    };
+    if (pointerMoveFrameRef.current !== undefined) return;
+    pointerMoveFrameRef.current = requestAnimationFrame(() => {
+      pointerMoveFrameRef.current = undefined;
+      const pendingMove = pendingPointerMoveRef.current;
+      pendingPointerMoveRef.current = undefined;
+      if (pendingMove) processPointerMove(pendingMove);
+    });
+  };
+
   const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+    if (pendingPointerMoveRef.current?.pointerId === event.pointerId) flushPointerMove();
     if (marqueeSelectionRef.current?.pointerId === event.pointerId) {
       marqueeSelectionRef.current = undefined;
       setMarqueeSelection(undefined);
@@ -1373,10 +1828,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       pivotWorld: mode === "rotate"
         ? getElementPivotWorld(transformElement)
         : undefined,
+      guideTargets: elements
+        .filter((item) => item.id !== transformElement.id && item.visible)
+        .map((item) => ({ id: item.id, bounds: getElementGeometry(item) })),
     };
     selectElement(transformElement.id);
     viewport.setPointerCapture(event.pointerId);
   };
+  startElementTransformDelegateRef.current = startElementTransform;
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -1808,23 +2267,26 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                     />
                   )}
                   <SE.ScenarioVisualLayer>
-                    {elements.map((element, layerIndex) => (
-                      <SE.ScenarioElement
+                    {elements.map((element, layerIndex) => element.visible && (
+                      <ScenarioVisualElementView
                         key={element.id}
-                        {...getRenderedElementProps(element, layerIndex)}
-                        onPointerDown={(event) => startElementTransform(event, "move", element)}
-                      >
-                        {element.imageData ? (
-                          <SE.ScenarioElementImage src={element.imagePreviewUrl ?? element.imageData} alt={element.name} draggable={false} />
-                        ) : (
-                          <SE.ScenarioElementCircle $color={element.color} />
-                        )}
-                      </SE.ScenarioElement>
+                        element={element}
+                        layerIndex={layerIndex}
+                        layerCount={elements.length}
+                        selected={selectedElementIdsSet.has(element.id)}
+                        responseRef={responsesByElementRef}
+                        elementRef={getResponseElementRef(element.id, "visual")}
+                        onStartTransform={stableStartElementTransform}
+                      />
                     ))}
                   </SE.ScenarioVisualLayer>
                   <SE.ScenarioControlsLayer>
-                    {elements.filter((element) => selectedElementIds.includes(element.id)).map((element) => (
-                      <SE.ScenarioElementControl key={element.id} {...getRenderedElementProps(element, elements.findIndex((item) => item.id === element.id))}>
+                    {elements.filter((element) => element.visible && selectedElementIdsSet.has(element.id)).map((element) => (
+                      <SE.ScenarioElementControl
+                        key={element.id}
+                        ref={getResponseElementRef(element.id, "control")}
+                        {...getRenderedElementProps(element, elementLayerIndexes.get(element.id) ?? 0)}
+                      >
                         {selectedElementId !== element.id ? (
                           <SE.SelectedElementOutline $zoom={view.zoom} />
                         ) : (
@@ -1953,24 +2415,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 }}
               />
               {layerElements.map((element) => (
-                <SE.LayerItem
+                <ScenarioLayerRowView
                   key={element.id}
-                  type="button"
-                  data-layer-id={element.id}
-                  $isSelected={selectedElementIds.includes(element.id)}
-                  $isDragging={isLocalDragging(element.id)}
-                  ref={draggable(element.id, {
-                    allowActionDrag: true,
-                    onClick: ({ event }) => {
-                      if (event.ctrlKey) toggleElementSelection(element.id);
-                      else selectElement(element.id);
-                    },
-                    onTopSwap: (result: LayerSwapResult) => handleLayerSwap(result, "top"),
-                    onBottomSwap: (result: LayerSwapResult) => handleLayerSwap(result, "bottom"),
-                  })}
-                >
-                  {element.name}
-                </SE.LayerItem>
+                  element={element}
+                  selected={selectedElementIdsSet.has(element.id)}
+                  dragging={isLocalDragging(element.id)}
+                  draggableRef={getLayerDraggableRef(element.id)}
+                  actions={stableLayerUiActions}
+                />
               ))}
             </SE.LayersPanel>
           </SE.RightTop>

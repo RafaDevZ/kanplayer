@@ -79,6 +79,11 @@ pub fn list_scenarios(database: State<Database>) -> Result<Vec<Scenario>, String
 }
 
 #[tauri::command]
+pub fn get_scenario(database: State<Database>, scenario_id: i64) -> Result<Scenario, String> {
+    scenario_service::get(&database, scenario_id)
+}
+
+#[tauri::command]
 pub fn create_scenario(database: State<Database>, scenario: ScenarioInput) -> Result<Scenario, String> {
     scenario_service::create(&database, scenario)
 }

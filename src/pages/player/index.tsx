@@ -2,7 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Icons } from "../../components/Icons";
 import { usePlayer } from "../../hooks/player/usePlayer";
-import { connectVocalAnalysis, setAudioOutputMode, setVocalOutputVolume } from "../../hooks/player/audioAnalysis";
+import { connectVocalAnalysis, disconnectAudioAnalysis, disconnectVocalAnalysis, setAudioOutputMode, setVocalOutputVolume } from "../../hooks/player/audioAnalysis";
 import * as PL from "./styles";
 
 const formatTime = (seconds: number) => {
@@ -40,6 +40,7 @@ export default function Player({
   vocalExtraction,
   vocalAnalysisPath,
 }: PlayerProps) {
+  const vocalAudioRef = useRef<HTMLAudioElement>(null);
   const {
     activeAudio,
     audioFiles,
@@ -58,9 +59,14 @@ export default function Player({
   } = usePlayer(audio, showManager, {
     seekTime,
     onDurationChange,
-    onTimeChange,
+    onTimeChange: (time) => {
+      const vocalAudio = vocalAudioRef.current;
+      if (vocalAudio && Math.abs(vocalAudio.currentTime - time) > 0.04) {
+        vocalAudio.currentTime = time;
+      }
+      onTimeChange?.(time);
+    },
   });
-  const vocalAudioRef = useRef<HTMLAudioElement>(null);
   const [audioOutputMode, setAudioOutputModeState] = useState<"music" | "vocal">("music");
   const syncAndPlayVocal = () => {
     const mainAudio = audioRef.current;
@@ -75,6 +81,8 @@ export default function Player({
     if (audioRef.current?.paused && vocalAnalysisPath) syncAndPlayVocal();
     togglePlayback();
   };
+  const playbackToggleRef = useRef(handlePlaybackToggle);
+  playbackToggleRef.current = handlePlaybackToggle;
 
   useEffect(() => {
     if (!vocalAnalysisPath && audioOutputMode === "vocal") setAudioOutputModeState("music");
@@ -88,6 +96,13 @@ export default function Player({
     setVocalOutputVolume(volume.value);
   }, [volume.value]);
 
+  useEffect(() => () => {
+    // As refs DOM já podem estar nulas quando o cleanup passivo roda. Os
+    // grafos são singletons, portanto libere explicitamente os grafos atuais.
+    disconnectAudioAnalysis();
+    disconnectVocalAnalysis();
+  }, [audioRef]);
+
   useEffect(() => {
     const vocalAudio = vocalAudioRef.current;
     if (!vocalAudio || !vocalAnalysisPath) return;
@@ -98,22 +113,13 @@ export default function Player({
     const mainAudio = audioRef.current;
     const vocalAudio = vocalAudioRef.current;
     if (!mainAudio || !vocalAudio || !vocalAnalysisPath) return;
-    let frame = 0;
-    const sync = () => {
-      if (Math.abs(vocalAudio.currentTime - mainAudio.currentTime) > 0.04) {
-        vocalAudio.currentTime = mainAudio.currentTime;
-      }
-      frame = requestAnimationFrame(sync);
-    };
     if (isPlaying) {
       vocalAudio.currentTime = mainAudio.currentTime;
       void vocalAudio.play();
-      frame = requestAnimationFrame(sync);
     } else {
       vocalAudio.pause();
       vocalAudio.currentTime = mainAudio.currentTime;
     }
-    return () => cancelAnimationFrame(frame);
   }, [audioRef, isPlaying, vocalAnalysisPath]);
 
   useEffect(() => {
@@ -121,11 +127,11 @@ export default function Player({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Space" || event.repeat) return;
       event.preventDefault();
-      handlePlaybackToggle();
+      playbackToggleRef.current();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enableSpacebarShortcut, handlePlaybackToggle]);
+  }, [enableSpacebarShortcut]);
 
   return (
     <PL.Body>

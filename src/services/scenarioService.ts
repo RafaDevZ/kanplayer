@@ -12,6 +12,8 @@ const toScenarioInput = (scenario: ScenarioProps) => ({
 export const scenarioService = {
   list: async () =>
     scenarioSchema.array().parse(await invoke<unknown>("list_scenarios")),
+  get: async (scenarioId: number) =>
+    scenarioSchema.parse(await invoke<unknown>("get_scenario", { scenarioId })),
   create: async (scenario: ScenarioProps) =>
     scenarioSchema.parse(
       await invoke<unknown>("create_scenario", {

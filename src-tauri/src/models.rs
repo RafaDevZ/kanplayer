@@ -197,6 +197,10 @@ pub struct ScenarioElementInput {
     pub pivot_x: f64,
     #[serde(default = "default_pivot")]
     pub pivot_y: f64,
+    #[serde(default = "default_visible")]
+    pub visible: bool,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
     pub color: String,
     #[serde(default)]
     pub image_data: Option<String>,
@@ -232,6 +236,8 @@ pub struct ScenarioElement {
     pub rotation: f64,
     pub pivot_x: f64,
     pub pivot_y: f64,
+    pub visible: bool,
+    pub opacity: f64,
     pub color: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_data: Option<String>,
@@ -259,3 +265,5 @@ pub struct ScenarioElement {
 }
 
 fn default_pivot() -> f64 { 0.5 }
+fn default_visible() -> bool { true }
+fn default_opacity() -> f64 { 1.0 }

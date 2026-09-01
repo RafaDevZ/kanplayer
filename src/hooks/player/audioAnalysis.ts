@@ -65,6 +65,22 @@ export const resumeAudioAnalysis = () => {
   if (context?.state === "suspended") void context.resume();
 };
 
+export const disconnectAudioAnalysis = (audio?: HTMLAudioElement) => {
+  if (audio && sourceAudio !== audio) return;
+  removeAudioStateListeners?.();
+  removeAudioStateListeners = undefined;
+  source?.disconnect();
+  analyser?.disconnect();
+  mainOutputGain?.disconnect();
+  source = undefined;
+  analyser = undefined;
+  mainOutputGain = undefined;
+  sourceAudio = undefined;
+  spectrum = undefined;
+  spectrumSnapshot = undefined;
+  audioIsPlaying = false;
+};
+
 export const readFrequencySpectrum = () => {
   if (!analyser || !spectrum) return undefined;
   // O cenário e o espectro podem solicitar os dados no mesmo frame. Reutilize
@@ -121,6 +137,18 @@ export const connectVocalAnalysis = (audio: HTMLAudioElement) => {
     vocalSilenceGain = undefined;
     vocalSamples = undefined;
   }
+};
+
+export const disconnectVocalAnalysis = (audio?: HTMLAudioElement) => {
+  if (audio && vocalAudio !== audio) return;
+  vocalSource?.disconnect();
+  vocalAnalyser?.disconnect();
+  vocalSilenceGain?.disconnect();
+  vocalSource = undefined;
+  vocalAnalyser = undefined;
+  vocalSilenceGain = undefined;
+  vocalSamples = undefined;
+  vocalAudio = undefined;
 };
 
 export const readVocalIntensity = () => {

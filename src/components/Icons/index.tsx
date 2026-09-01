@@ -7,6 +7,8 @@ export const Icons = {
   addIcon: <Icon icon="basil:add-outline" />,
   deleteIcon: <Icon icon="solar:trash-bin-trash-linear" />,
   imageAddIcon: <Icon icon="solar:gallery-add-linear" />,
+  eyeIcon: <Icon icon="solar:eye-linear" />,
+  eyeClosedIcon: <Icon icon="solar:eye-closed-linear" />,
   closeIcon: <Icon icon="bx:cross" style={{ rotate: "45deg" }} />,
   timelineIcon: (
     <Icon icon="fluent:timeline-24-regular" style={{ height: 18, width: 18 }} />

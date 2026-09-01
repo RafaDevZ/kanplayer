@@ -69,9 +69,10 @@ export function useUpdateTimeline(
         timelineKeys.byTrack(timeline.track.path),
         timeline,
       );
-      queryClient.invalidateQueries({ queryKey: timelineKeys.all });
+      // Atualize apenas a listagem. A consulta por faixa acima já recebeu a
+      // resposta autoritativa da mutation e não precisa de um segundo request.
+      queryClient.invalidateQueries({ queryKey: timelineKeys.all, exact: true });
       queryClient.invalidateQueries({ queryKey: ["stems"] });
-      queryClient.invalidateQueries({ queryKey: ["scenarios"] });
       onUpdated?.(timeline);
     },
   });

@@ -298,27 +298,40 @@ export const ScenarioElement = styled.div<{
   $responseScale: number;
   $rotation: number;
   $responseRotation: number;
+  $opacity: number;
   $isSelected: boolean;
   $layerZIndex: number;
 }>`
   position: absolute;
   left: 0;
   top: 0;
-  width: ${({ $scaleX, $responseScale }) => 40 * $scaleX * $responseScale}px;
-  height: ${({ $scaleY, $responseScale }) => 40 * $scaleY * $responseScale}px;
+  width: var(--scenario-element-width, ${({ $scaleX, $responseScale }) => 40 * $scaleX * $responseScale}px);
+  height: var(--scenario-element-height, ${({ $scaleY, $responseScale }) => 40 * $scaleY * $responseScale}px);
   border: 0;
   border-radius: 50%;
   box-sizing: border-box;
-  transform: translate3d(${({ $pivotWorldX, $responseTranslateX }) => $pivotWorldX + $responseTranslateX}px, ${({ $pivotWorldY, $responseTranslateY }) => $pivotWorldY + $responseTranslateY}px, ${({ $responseTranslateZ }) => $responseTranslateZ}px)
-    rotate(${({ $rotation, $responseRotation }) => $rotation + $responseRotation}deg)
-    translate3d(${({ $pivotLocalX }) => -$pivotLocalX}px, ${({ $pivotLocalY }) => -$pivotLocalY}px, 0);
+  transform: translate3d(
+      var(--scenario-element-x, ${({ $pivotWorldX, $responseTranslateX }) => $pivotWorldX + $responseTranslateX}px),
+      var(--scenario-element-y, ${({ $pivotWorldY, $responseTranslateY }) => $pivotWorldY + $responseTranslateY}px),
+      var(--scenario-element-z, ${({ $responseTranslateZ }) => $responseTranslateZ}px)
+    )
+    rotate(var(--scenario-element-rotation, ${({ $rotation, $responseRotation }) => $rotation + $responseRotation}deg))
+    translate3d(
+      var(--scenario-element-pivot-x, ${({ $pivotLocalX }) => -$pivotLocalX}px),
+      var(--scenario-element-pivot-y, ${({ $pivotLocalY }) => -$pivotLocalY}px),
+      0
+    );
   transform-origin: top left;
   z-index: ${({ $layerZIndex }) => $layerZIndex};
+  opacity: ${({ $opacity }) => $opacity};
+  contain: ${({ $isSelected }) => ($isSelected ? "none" : "layout style paint")};
   cursor: pointer;
 `;
 
 export const ScenarioElementControl = styled(ScenarioElement)`
   pointer-events: none;
+  opacity: 1;
+  contain: none;
   cursor: default;
 `;
 
@@ -514,8 +527,9 @@ export const LayersPanel = styled.div`
   overflow-y: auto;
 `;
 
-export const LayerItem = styled.button<{ $isSelected: boolean; $isDragging: boolean }>`
-  width: 100%;
+export const LayerItem = styled.div<{ $isSelected: boolean; $isDragging: boolean }>`
+  width: auto;
+  flex: 1;
   min-height: 30px;
   flex-shrink: 0;
   border: 0;
@@ -531,6 +545,66 @@ export const LayerItem = styled.button<{ $isSelected: boolean; $isDragging: bool
 
   &:active { cursor: grabbing; }
   &:hover { background-color: ${({ $isSelected }) => ($isSelected ? "var(--blue-300)" : "var(--black-400)")}; }
+`;
+
+export const LayerNameInput = styled.input`
+  width: 100%;
+  height: 30px;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  text-align: left;
+`;
+
+export const LayerRow = styled.div<{ $isVisible: boolean }>`
+  display: flex;
+  gap: 4px;
+  min-height: 30px;
+  flex-shrink: 0;
+  opacity: ${({ $isVisible }) => ($isVisible ? 1 : 0.58)};
+`;
+
+export const LayerVisibilityButton = styled.button`
+  width: 30px;
+  min-width: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--white);
+  background-color: var(--black-200);
+  cursor: pointer;
+
+  &:hover { background-color: var(--black-400); }
+  svg { display: block; width: 15px; height: 15px; margin: auto; }
+`;
+
+export const LayerOpacityButton = styled(LayerVisibilityButton)<{ $opacity: number }>`
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0;
+  font-size: 8px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: var(--black-200);
+  touch-action: none;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border-radius: 2px;
+    background: linear-gradient(to top, rgba(0, 168, 255, ${({ $opacity }) => $opacity}) 0 ${({ $opacity }) => $opacity * 100}%, var(--black-300) ${({ $opacity }) => $opacity * 100}% 100%);
+  }
+
+  span { position: relative; z-index: 1; }
 `;
 
 export const RightBottom = styled.div`
