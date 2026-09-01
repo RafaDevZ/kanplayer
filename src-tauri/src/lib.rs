@@ -32,6 +32,8 @@ pub fn run() {
             commands::create_scenario,
             commands::update_scenario,
             commands::delete_scenario,
+            commands::list_operation_presets,
+            commands::save_operation_preset,
             commands::render_ritrace,
             commands::cancel_ritrace_render,
         ])

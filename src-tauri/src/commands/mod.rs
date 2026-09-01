@@ -1,7 +1,7 @@
 use crate::{
     database::Database,
-    models::{AudioFile, AudioImportInput, RitraceRenderInput, RitraceRenderResult, Scenario, ScenarioInput, StemInput, Timeline, TimelineCreateInput, TimelineSaveInput, TimelineStem},
-    services::{audio_import_service, music_library_service, ritrace_service, scenario_service, stem_service, timeline_service},
+    models::{AudioFile, AudioImportInput, OperationPreset, RitraceRenderInput, RitraceRenderResult, Scenario, ScenarioInput, StemInput, Timeline, TimelineCreateInput, TimelineSaveInput, TimelineStem},
+    services::{audio_import_service, music_library_service, operation_preset_service, ritrace_service, scenario_service, stem_service, timeline_service},
 };
 use tauri::{AppHandle, State};
 
@@ -100,6 +100,21 @@ pub fn update_scenario(
 #[tauri::command]
 pub fn delete_scenario(database: State<Database>, scenario_id: i64) -> Result<(), String> {
     scenario_service::delete(&database, scenario_id)
+}
+
+#[tauri::command]
+pub fn list_operation_presets(app: AppHandle, category: String) -> Result<Vec<OperationPreset>, String> {
+    operation_preset_service::list(&app, category)
+}
+
+#[tauri::command]
+pub fn save_operation_preset(
+    app: AppHandle,
+    name: String,
+    category: String,
+    operation: serde_json::Value,
+) -> Result<OperationPreset, String> {
+    operation_preset_service::save(&app, name, category, operation)
 }
 
 #[tauri::command]

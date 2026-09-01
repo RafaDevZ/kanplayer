@@ -136,10 +136,15 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 image_data TEXT,
                 image_width REAL,
                 image_height REAL,
+                rig_parent_id TEXT,
+                rig_parent_anchor_x REAL CHECK (rig_parent_anchor_x IS NULL OR (rig_parent_anchor_x >= 0 AND rig_parent_anchor_x <= 1)),
+                rig_parent_anchor_y REAL CHECK (rig_parent_anchor_y IS NULL OR (rig_parent_anchor_y >= 0 AND rig_parent_anchor_y <= 1)),
+                rig_child_anchor_x REAL CHECK (rig_child_anchor_x IS NULL OR (rig_child_anchor_x >= 0 AND rig_child_anchor_x <= 1)),
+                rig_child_anchor_y REAL CHECK (rig_child_anchor_y IS NULL OR (rig_child_anchor_y >= 0 AND rig_child_anchor_y <= 1)),
                 operations_json TEXT NOT NULL DEFAULT '[]',
                 linked_timeline_id INTEGER,
                 linked_stem_id INTEGER,
-                stem_response_operation TEXT CHECK (stem_response_operation IS NULL OR stem_response_operation IN ('scale', 'rotation')),
+                stem_response_operation TEXT CHECK (stem_response_operation IS NULL OR stem_response_operation IN ('scale', 'width', 'height', 'rotation', 'translation', 'wiggle', 'random', 'wander')),
                 stem_response_value REAL CHECK (stem_response_value IS NULL OR stem_response_value >= 0),
                 stem_response_attack_seconds REAL CHECK (stem_response_attack_seconds IS NULL OR stem_response_attack_seconds >= 0),
                 stem_response_release_seconds REAL CHECK (stem_response_release_seconds IS NULL OR stem_response_release_seconds >= 0),
@@ -259,6 +264,20 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
             connection
                 .execute(&format!("ALTER TABLE scenario_elements ADD COLUMN {column} {definition}"), [])
                 .map_err(|error| format!("Não foi possível atualizar os dados das imagens do cenário: {error}"))?;
+        }
+    }
+
+    for (column, definition) in [
+        ("rig_parent_id", "TEXT"),
+        ("rig_parent_anchor_x", "REAL"),
+        ("rig_parent_anchor_y", "REAL"),
+        ("rig_child_anchor_x", "REAL"),
+        ("rig_child_anchor_y", "REAL"),
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            connection
+                .execute(&format!("ALTER TABLE scenario_elements ADD COLUMN {column} {definition}"), [])
+                .map_err(|error| format!("Não foi possível atualizar o rig dos elementos do cenário: {error}"))?;
         }
     }
 

@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationPreset {
+    pub name: String,
+    #[serde(default = "default_operation_preset_category")]
+    pub category: String,
+    pub operation: serde_json::Value,
+}
+
+fn default_operation_preset_category() -> String {
+    "operation".to_string()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioFile {
@@ -209,6 +222,16 @@ pub struct ScenarioElementInput {
     #[serde(default)]
     pub image_height: Option<f64>,
     #[serde(default)]
+    pub rig_parent_id: Option<String>,
+    #[serde(default)]
+    pub rig_parent_anchor_x: Option<f64>,
+    #[serde(default)]
+    pub rig_parent_anchor_y: Option<f64>,
+    #[serde(default)]
+    pub rig_child_anchor_x: Option<f64>,
+    #[serde(default)]
+    pub rig_child_anchor_y: Option<f64>,
+    #[serde(default)]
     pub operations: Vec<serde_json::Value>,
     pub linked_timeline_id: Option<i64>,
     pub linked_stem_id: Option<i64>,
@@ -245,6 +268,16 @@ pub struct ScenarioElement {
     pub image_width: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_height: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig_parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig_parent_anchor_x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig_parent_anchor_y: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig_child_anchor_x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig_child_anchor_y: Option<f64>,
     pub operations: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_timeline_id: Option<i64>,
@@ -280,9 +313,14 @@ fn take_alias(object: &mut serde_json::Map<String, serde_json::Value>, aliases: 
 fn normalized_operation_name(value: &str) -> Option<&'static str> {
     match value.trim().to_lowercase().as_str() {
         "scale" | "escala" => Some("scale"),
+        "width" | "largura" => Some("width"),
+        "height" | "altura" => Some("height"),
         "rotation" | "rotate" | "rotacao" | "rotação" => Some("rotation"),
+        "opacity" | "opacidade" => Some("opacity"),
         "translation" | "translate" | "translacao" | "translação" => Some("translation"),
         "wiggle" => Some("wiggle"),
+        "random" | "aleatorio" | "aleatório" => Some("random"),
+        "wander" | "flutuacao" | "flutuação" => Some("wander"),
         _ => None,
     }
 }
@@ -313,6 +351,19 @@ fn normalize_operation_object(
         ("translationY", &["translation_y", "y"] as &[&str]),
         ("translationZ", &["translation_z", "z"] as &[&str]),
         ("repetitions", &["repeats", "repeat", "repeticoes", "repetições"] as &[&str]),
+        ("randomScale", &["random_scale"] as &[&str]),
+        ("randomRotation", &["random_rotation"] as &[&str]),
+        ("randomTranslationX", &["random_translation_x"] as &[&str]),
+        ("randomTranslationY", &["random_translation_y"] as &[&str]),
+        ("randomTranslationZ", &["random_translation_z"] as &[&str]),
+        ("randomWiggleX", &["random_wiggle_x"] as &[&str]),
+        ("randomWiggleY", &["random_wiggle_y"] as &[&str]),
+        ("randomWiggleZ", &["random_wiggle_z"] as &[&str]),
+        ("randomRepetitions", &["random_repetitions"] as &[&str]),
+        ("wanderRadius", &["wander_radius"] as &[&str]),
+        ("wanderRotation", &["wander_rotation"] as &[&str]),
+        ("wanderRepetitions", &["wander_repetitions"] as &[&str]),
+        ("wanderOpposition", &["wander_opposition"] as &[&str]),
         ("attackSeconds", &["attack_seconds"] as &[&str]),
         ("releaseSeconds", &["release_seconds"] as &[&str]),
     ] {
@@ -349,7 +400,7 @@ fn normalize_operation_object(
             object.insert("transition".to_string(), serde_json::Value::from(normalized));
         }
     }
-    for key in ["stemId", "repetitions"] {
+    for key in ["stemId", "repetitions", "randomRepetitions", "wanderRepetitions"] {
         if let Some(number) = object.get(key).and_then(serde_json::Value::as_str)
             .and_then(|value| value.parse::<i64>().ok())
         {
@@ -357,7 +408,10 @@ fn normalize_operation_object(
         }
     }
     for key in [
-        "value", "translationX", "translationY", "translationZ", "attackSeconds", "releaseSeconds",
+        "value", "translationX", "translationY", "translationZ", "randomScale", "randomRotation",
+        "randomTranslationX", "randomTranslationY", "randomTranslationZ", "randomWiggleX",
+        "randomWiggleY", "randomWiggleZ", "wanderRadius", "wanderRotation", "wanderOpposition",
+        "attackSeconds", "releaseSeconds",
     ] {
         if let Some(number) = object.get(key).and_then(serde_json::Value::as_str)
             .and_then(|value| value.parse::<f64>().ok())
@@ -447,6 +501,53 @@ mod scenario_operation_tests {
         assert_eq!(operations[0]["operation"], "scale");
         assert_eq!(operations[1]["operation"], "wiggle");
         assert_eq!(operations[1]["stemId"], 2);
+    }
+
+    #[test]
+    fn normalizes_random_operation_and_its_parameters() {
+        let operations = normalize_scenario_operations(
+            r#"{"id":"random","type":"aleatório","random_scale":1.4,"random_rotation":30,"random_translation_x":12,"random_wiggle_y":8,"random_repetitions":6}"#,
+            "element",
+            LegacyScenarioOperation::default(),
+        );
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0]["operation"], "random");
+        assert_eq!(operations[0]["randomScale"], 1.4);
+        assert_eq!(operations[0]["randomRotation"], 30);
+        assert_eq!(operations[0]["randomTranslationX"], 12);
+        assert_eq!(operations[0]["randomWiggleY"], 8);
+        assert_eq!(operations[0]["randomRepetitions"], 6);
+    }
+
+    #[test]
+    fn normalizes_wander_operation_and_its_parameters() {
+        let operations = normalize_scenario_operations(
+            r#"{"id":"wander","type":"flutuação","wander_radius":40,"wander_rotation":12,"wander_repetitions":3,"wander_opposition":0.8}"#,
+            "element",
+            LegacyScenarioOperation::default(),
+        );
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0]["operation"], "wander");
+        assert_eq!(operations[0]["wanderRadius"], 40);
+        assert_eq!(operations[0]["wanderRotation"], 12);
+        assert_eq!(operations[0]["wanderRepetitions"], 3);
+        assert_eq!(operations[0]["wanderOpposition"], 0.8);
+    }
+
+    #[test]
+    fn normalizes_width_and_height_operation_names() {
+        let width = normalize_scenario_operations(
+            r#"{"id":"width","type":"largura","value":1.5}"#,
+            "element",
+            LegacyScenarioOperation::default(),
+        );
+        let height = normalize_scenario_operations(
+            r#"{"id":"height","type":"altura","value":1.25}"#,
+            "element",
+            LegacyScenarioOperation::default(),
+        );
+        assert_eq!(width[0]["operation"], "width");
+        assert_eq!(height[0]["operation"], "height");
     }
 
     #[test]

@@ -27,6 +27,7 @@ export const Icons = {
   handIcon: <Icon icon="clarity:cursor-hand-open-line" />,
   selectIcon: <Icon icon="solar:cursor-square-linear" />,
   smartGuideIcon: <Icon icon="hugeicons:pathfinder-minus-back" />,
+  rigIcon: <Icon icon="hugeicons:hierarchy-square-03" />,
   alignHorizontalCenterIcon: <Icon icon="hugeicons:keyframe-align-horizontal" />,
   alignVerticalCenterIcon: <Icon icon="hugeicons:keyframe-align-vertical" />,
   alignCenterIcon: <Icon icon="hugeicons:keyframe-align-center" />,

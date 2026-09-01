@@ -477,7 +477,10 @@ export const FrequencyRange = styled.div`
   inset-block: 0;
   background: rgba(199, 125, 255, 0.22);
   border-inline: 1px solid var(--purple-100);
-  pointer-events: none;
+  cursor: grab;
+  touch-action: none;
+
+  &:active { cursor: grabbing; }
 `;
 
 export const FrequencyHandle = styled.button`
@@ -511,6 +514,41 @@ export const OperationWindowBody = styled.div`
   box-sizing: border-box;
   min-height: 100%;
   flex: 1;
+`;
+
+export const PresetToolbar = styled.div`
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 0 4px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+
+  > * { flex: 1; min-width: 0; }
+`;
+
+export const PresetExportButton = styled.button`
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--black-300);
+  color: var(--white);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover { background: var(--black-400); }
+`;
+
+export const PresetNameBody = styled.div`
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 10px;
+  box-sizing: border-box;
 `;
 
 export const VocalExtractionStatus = styled.div`

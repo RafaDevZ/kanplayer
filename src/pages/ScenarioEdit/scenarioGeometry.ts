@@ -7,6 +7,9 @@ export interface Point {
 
 export interface ElementResponse {
   scale: number;
+  widthScale: number;
+  heightScale: number;
+  opacity: number;
   rotation: number;
   translationX: number;
   translationY: number;
@@ -38,6 +41,10 @@ export const scenarioElementBaseSize = 40;
 
 export const defaultElementResponse: ElementResponse = {
   scale: 1,
+  widthScale: 1,
+  heightScale: 1,
+  // Deslocamento temporário em relação à opacidade base do elemento.
+  opacity: 0,
   rotation: 0,
   translationX: 0,
   translationY: 0,
@@ -105,11 +112,24 @@ export const getRenderedElementGeometry = (
   element: ScenarioElementProps,
   response: ElementResponse = defaultElementResponse,
 ) => {
-  const width = scenarioElementBaseSize * element.scaleX * response.scale;
-  const height = scenarioElementBaseSize * element.scaleY * response.scale;
+  const baseWidth = scenarioElementBaseSize * element.scaleX;
+  const baseHeight = scenarioElementBaseSize * element.scaleY;
+  const width = baseWidth * response.scale * response.widthScale;
+  const height = baseHeight * response.scale * response.heightScale;
   const pivot = getElementPivotWorld(element);
-  const origin = { x: pivot.x + response.translationX, y: pivot.y + response.translationY };
   const radians = ((element.rotation + response.rotation) * Math.PI) / 180;
+  const centerAfterUniformScale = rotatePoint({
+    x: (0.5 - element.pivotX) * baseWidth * response.scale,
+    y: (0.5 - element.pivotY) * baseHeight * response.scale,
+  }, radians);
+  const centerAfterAxisScale = rotatePoint({
+    x: (0.5 - element.pivotX) * width,
+    y: (0.5 - element.pivotY) * height,
+  }, radians);
+  const origin = {
+    x: pivot.x + response.translationX + centerAfterUniformScale.x - centerAfterAxisScale.x,
+    y: pivot.y + response.translationY + centerAfterUniformScale.y - centerAfterAxisScale.y,
+  };
   const localToWorld = (x: number, y: number) => {
     const rotated = rotatePoint(
       { x: x - element.pivotX * width, y: y - element.pivotY * height },

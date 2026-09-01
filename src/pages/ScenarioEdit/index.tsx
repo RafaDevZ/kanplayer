@@ -20,34 +20,44 @@ import type {
   StemResponseOperation,
   StemResponseTransition,
 } from "../../interfaces/ScenarioElement";
+import type { OperationPresetCategory, OperationPresetConfiguration, OperationPresetProps } from "../../interfaces/OperationPreset";
 import { useScenario, useUpdateScenario } from "../../queries/useScenarios";
 import { useStems } from "../../queries/useStems";
 import { useTimelines, useUpdateTimeline } from "../../queries/useTimelines";
 import { useRitraceRender } from "../../queries/useRitrace";
+import { operationPresetService } from "../../services/operationPresetService";
+import { useAlert } from "../../utils/Utils";
 import { ritraceProgressSchema, type RitraceProgressProps } from "../../interfaces/Ritrace";
 import { listen } from "@tauri-apps/api/event";
 import Player from "../player";
-import PixiScenarioRenderer, { type PixiScenarioRendererHandle, type PixiTransformMode } from "./PixiScenarioRenderer";
+import PixiScenarioRenderer, { type PixiScenarioRendererHandle, type PixiTransformMode, type RigAnchorRole } from "./PixiScenarioRenderer";
 import {
   defaultElementResponse,
   getElementDimensions,
   getElementGeometry,
   getElementPivotWorld,
   getScenarioOffset,
-  hasElementResponse,
   scenarioElementBaseSize,
   worldPointToElementCenterLocal,
   type ElementGeometry,
   type ElementResponse,
 } from "./scenarioGeometry";
 import * as SE from "./styles";
+import {
+  composeRigResponses,
+  getElementNormalizedPoint,
+  getRigDescendants,
+  getRigResponsiveElementIds,
+  transformRigDescendants,
+  wouldCreateRigCycle,
+} from "./scenarioRig";
 
 interface ScenarioEditProps {
   scenarioId: number;
   onBack: () => void;
 }
 
-type ScenarioTool = "hand" | "select";
+type ScenarioTool = "hand" | "select" | "rig";
 type TransformMode = "move" | "rotate" | "pivot" | `resize-${ResizeHandle}`;
 type ResizeHandle = "north-west" | "north" | "north-east" | "east" | "south-east" | "south" | "south-west" | "west";
 interface ElementTransformDragProps {
@@ -60,6 +70,7 @@ interface ElementTransformDragProps {
   isAspectUnlocked: boolean;
   pivotWorld?: { x: number; y: number };
   guideTargets: Array<{ id: string; bounds: ElementGeometry }>;
+  rigDescendantStarts: ScenarioElementProps[];
 }
 interface LayerSwapResult {
   draggableData: { from: unknown; to: unknown };
@@ -73,6 +84,11 @@ interface MarqueeSelection {
   start: { x: number; y: number };
   current: { x: number; y: number };
 }
+interface RigDraft {
+  parentId: string;
+  parentAnchorX: number;
+  parentAnchorY: number;
+}
 
 interface ScenarioPointerMove {
   pointerId: number;
@@ -81,14 +97,24 @@ interface ScenarioPointerMove {
   shiftKey: boolean;
   ctrlKey: boolean;
 }
+interface RigAnchorDrag {
+  pointerId: number;
+  childId: string;
+  role: RigAnchorRole;
+}
 
 const circleBaseSize = scenarioElementBaseSize;
 
 const stemResponseOperationLabels: Record<StemResponseOperation, string> = {
   scale: "Escala",
+  width: "Largura",
+  height: "Altura",
   rotation: "Rotação",
+  opacity: "Opacidade",
   translation: "Translação",
   wiggle: "Wiggle",
+  random: "Aleatório",
+  wander: "Flutuação",
 };
 
 const stemResponseTransitionLabels: Record<StemResponseTransition, string> = {
@@ -202,18 +228,181 @@ const ScenarioLayerRowView = memo(function ScenarioLayerRowView({
   );
 });
 
+type RandomOperationField = keyof Pick<ScenarioElementOperationProps,
+  | "randomScale" | "randomRotation" | "randomTranslationX" | "randomTranslationY" | "randomTranslationZ"
+  | "randomWiggleX" | "randomWiggleY" | "randomWiggleZ" | "randomRepetitions"
+>;
+type OperationNumericField = keyof Pick<ScenarioElementOperationProps,
+  | "value" | "translationX" | "translationY" | "translationZ" | "repetitions"
+  | "randomScale" | "randomRotation" | "randomTranslationX" | "randomTranslationY" | "randomTranslationZ"
+  | "randomWiggleX" | "randomWiggleY" | "randomWiggleZ" | "randomRepetitions"
+  | "wanderRadius" | "wanderRotation" | "wanderRepetitions" | "wanderOpposition"
+  | "attackSeconds" | "releaseSeconds"
+>;
+type ModulatorNumericField = OperationNumericField | "strength";
+
+const isSignedOperationField = (field: OperationNumericField) =>
+  field === "value"
+  ||
+  field.startsWith("translation")
+  || field === "randomRotation"
+  || field === "wanderRotation"
+  || field.startsWith("randomTranslation")
+  || field.startsWith("randomWiggle");
+
+const isRepetitionField = (field: OperationNumericField) =>
+  field === "repetitions" || field === "randomRepetitions" || field === "wanderRepetitions";
+
+interface RandomOperationInputsProps {
+  operation: Pick<ScenarioElementOperationProps, RandomOperationField>;
+  onChange: (field: RandomOperationField, value: string) => void;
+}
+
+const RandomOperationInputs = ({ operation, onChange }: RandomOperationInputsProps) => (
+  <>
+    <TitledInput title="Escala" type="number" min="0" value={operation.randomScale ?? ""} onChange={(event) => onChange("randomScale", event.currentTarget.value)} />
+    <TitledInput title="Rotação (°)" type="number" value={operation.randomRotation ?? ""} onChange={(event) => onChange("randomRotation", event.currentTarget.value)} />
+    <TitledInput title="Translação X" type="number" value={operation.randomTranslationX ?? ""} onChange={(event) => onChange("randomTranslationX", event.currentTarget.value)} />
+    <TitledInput title="Translação Y" type="number" value={operation.randomTranslationY ?? ""} onChange={(event) => onChange("randomTranslationY", event.currentTarget.value)} />
+    <TitledInput title="Translação Z" type="number" value={operation.randomTranslationZ ?? ""} onChange={(event) => onChange("randomTranslationZ", event.currentTarget.value)} />
+    <TitledInput title="Wiggle X" type="number" value={operation.randomWiggleX ?? ""} onChange={(event) => onChange("randomWiggleX", event.currentTarget.value)} />
+    <TitledInput title="Wiggle Y" type="number" value={operation.randomWiggleY ?? ""} onChange={(event) => onChange("randomWiggleY", event.currentTarget.value)} />
+    <TitledInput title="Wiggle Z" type="number" value={operation.randomWiggleZ ?? ""} onChange={(event) => onChange("randomWiggleZ", event.currentTarget.value)} />
+    <TitledInput title="Repetições" type="number" min="1" step="1" value={operation.randomRepetitions ?? 4} onChange={(event) => onChange("randomRepetitions", event.currentTarget.value)} />
+  </>
+);
+
+interface WanderOperationInputsProps {
+  operation: Pick<ScenarioElementOperationProps, "wanderRadius" | "wanderRotation" | "wanderRepetitions" | "wanderOpposition">;
+  onChange: (field: "wanderRadius" | "wanderRotation" | "wanderRepetitions" | "wanderOpposition", value: string) => void;
+}
+
+const WanderOperationInputs = ({ operation, onChange }: WanderOperationInputsProps) => (
+  <>
+    <TitledInput title="Raio" type="number" min="0" value={operation.wanderRadius ?? 20} onChange={(event) => onChange("wanderRadius", event.currentTarget.value)} />
+    <TitledInput title="Rotação (°)" type="number" value={operation.wanderRotation ?? 8} onChange={(event) => onChange("wanderRotation", event.currentTarget.value)} />
+    <TitledInput title="Repetições" type="number" min="1" step="1" value={operation.wanderRepetitions ?? 2} onChange={(event) => onChange("wanderRepetitions", event.currentTarget.value)} />
+    <TitledInput title="Chance de lado oposto (0–1)" type="number" min="0" max="1" step="0.05" value={operation.wanderOpposition ?? 0.75} onChange={(event) => onChange("wanderOpposition", event.currentTarget.value)} />
+  </>
+);
+
+const randomSeedCache = new Map<string, number>();
+
+const getStringSeed = (value: string) => {
+  const cached = randomSeedCache.get(value);
+  if (cached !== undefined) return cached;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const seed = hash >>> 0;
+  if (randomSeedCache.size >= 4096) randomSeedCache.clear();
+  randomSeedCache.set(value, seed);
+  return seed;
+};
+
+const getSeededRandom = (seed: number, index: number) => {
+  let value = (seed + Math.imul(index + 1, 0x9e3779b1)) >>> 0;
+  value ^= value << 13;
+  value ^= value >>> 17;
+  value ^= value << 5;
+  return ((value >>> 0) / 0xffffffff) * 2 - 1;
+};
+
+const getSmoothRandom = (progress: number, repetitions: number, seedKey: string, channel: number) => {
+  const position = Math.max(0, progress) * repetitions;
+  const index = Math.floor(position);
+  const fraction = position - index;
+  const eased = fraction * fraction * (3 - 2 * fraction);
+  const seed = getStringSeed(`${seedKey}:${channel}`);
+  const from = getSeededRandom(seed, index);
+  const to = getSeededRandom(seed, index + 1);
+  return from + (to - from) * eased;
+};
+
 const applyResponseOperation = (
   response: ElementResponse,
-  operation: Pick<ScenarioElementOperationProps, "operation" | "value" | "translationX" | "translationY" | "translationZ" | "repetitions">,
+  operation: Pick<ScenarioElementOperationProps,
+    | "operation" | "value" | "translationX" | "translationY" | "translationZ" | "repetitions"
+    | "randomScale" | "randomRotation" | "randomTranslationX" | "randomTranslationY" | "randomTranslationZ"
+    | "randomWiggleX" | "randomWiggleY" | "randomWiggleZ" | "randomRepetitions"
+    | "wanderRadius" | "wanderRotation" | "wanderRepetitions" | "wanderOpposition"
+  >,
   intensity: number,
   progress = 1,
+  seedKey = "random",
+  baseOpacity = 1,
 ): ElementResponse => {
   if (operation.operation === "scale") {
     response.scale *= 1 + ((operation.value ?? 1) - 1) * intensity;
     return response;
   }
+  if (operation.operation === "width") {
+    response.widthScale *= 1 + ((operation.value ?? 1) - 1) * intensity;
+    return response;
+  }
+  if (operation.operation === "height") {
+    response.heightScale *= 1 + ((operation.value ?? 1) - 1) * intensity;
+    return response;
+  }
   if (operation.operation === "rotation") {
     response.rotation += (operation.value ?? 0) * intensity;
+    return response;
+  }
+  if (operation.operation === "opacity") {
+    const targetOpacity = Math.max(0, Math.min(1, operation.value ?? 1));
+    response.opacity += (targetOpacity - baseOpacity) * intensity;
+    return response;
+  }
+  if (operation.operation === "wander") {
+    const repetitions = Math.max(1, Math.floor(operation.wanderRepetitions ?? 2));
+    const cyclePosition = Math.max(0, progress) * repetitions;
+    const cycle = Math.floor(cyclePosition);
+    const cycleProgress = cyclePosition - cycle;
+    const opposition = Math.min(1, Math.max(0, operation.wanderOpposition ?? 0.75));
+    const seed = getStringSeed(`${seedKey}:wander`);
+    const prefersOpposite = (getSeededRandom(seed, cycle * 5) + 1) / 2 <= opposition;
+    const slowlyChangingAxis = getSmoothRandom(cycle / 6, 1, seedKey, 11) * Math.PI;
+    const freeAngle = ((getSeededRandom(seed, cycle * 5 + 1) + 1) / 2) * Math.PI * 2;
+    const targetAngle = prefersOpposite ? slowlyChangingAxis + cycle * Math.PI : freeAngle;
+    const radialRandom = (getSeededRandom(seed, cycle * 5 + 2) + 1) / 2;
+    const radialFactor = 0.55 + Math.sqrt(radialRandom) * 0.45;
+    const returnToCenter = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+    // Em vez de sair e voltar pela mesma reta, percorre um arco diferente em
+    // cada excursão. O raio continua fechando em zero nos limites do ciclo,
+    // portanto a posição base permanece exata e não há acúmulo de deslocamento.
+    const curveDirection = getSeededRandom(seed, cycle * 5 + 3) < 0 ? -1 : 1;
+    const curveRandom = (getSeededRandom(seed, cycle * 5 + 4) + 1) / 2;
+    const curveSweep = (0.35 + curveRandom * 0.9) * Math.PI * curveDirection;
+    const curvedProgress = cycleProgress * cycleProgress * (3 - 2 * cycleProgress);
+    const angle = targetAngle + (curvedProgress - 0.5) * curveSweep;
+    const distance = (operation.wanderRadius ?? 20) * radialFactor * returnToCenter * intensity;
+    response.translationX += Math.cos(angle) * distance;
+    response.translationY += Math.sin(angle) * distance;
+    const rotationEnvelope = Math.sin(cycleProgress * Math.PI);
+    const rotationSway = 0.75 + 0.25 * Math.sin(cycleProgress * Math.PI * 2 + curveRandom * Math.PI * 2);
+    response.rotation += (operation.wanderRotation ?? 8) * curveDirection * rotationEnvelope * rotationSway * intensity;
+    return response;
+  }
+  if (operation.operation === "random") {
+    const repetitions = Math.max(1, Math.floor(operation.randomRepetitions ?? 4));
+    const randomX = getSmoothRandom(progress, repetitions, seedKey, 1);
+    const randomY = getSmoothRandom(progress, repetitions, seedKey, 2);
+    const randomZ = getSmoothRandom(progress, repetitions, seedKey, 3);
+    const randomRotation = getSmoothRandom(progress, repetitions, seedKey, 4);
+    const randomScale = (getSmoothRandom(progress, repetitions, seedKey, 5) + 1) / 2;
+    const phase = getSeededRandom(getStringSeed(seedKey), 6) * Math.PI * 2;
+    const wiggleEnvelope = progress >= 0 && progress <= 1 ? 1 - progress : 1;
+    const wiggle = Math.sin(progress * repetitions * Math.PI * 2 + phase) * wiggleEnvelope * intensity;
+    response.scale *= 1 + ((operation.randomScale ?? 1) - 1) * randomScale * intensity;
+    response.rotation += (operation.randomRotation ?? 0) * randomRotation * intensity;
+    response.translationX += (operation.randomTranslationX ?? 0) * randomX * intensity
+      + (operation.randomWiggleX ?? 0) * wiggle;
+    response.translationY += (operation.randomTranslationY ?? 0) * randomY * intensity
+      + (operation.randomWiggleY ?? 0) * wiggle;
+    response.translationZ += (operation.randomTranslationZ ?? 0) * randomZ * intensity
+      + (operation.randomWiggleZ ?? 0) * wiggle;
     return response;
   }
   const oscillation = operation.operation === "wiggle"
@@ -286,6 +475,7 @@ const ensureElementNames = (items: ScenarioElementProps[]) => {
 };
 
 export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) {
+  const { setAlert } = useAlert();
   const { data: scenario } = useScenario(scenarioId);
   const { data: timelines } = useTimelines();
   const { data: globalStems } = useStems();
@@ -302,10 +492,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const pendingOpacityYRef = useRef<number | undefined>(undefined);
   const dragRef = useRef<{ pointerId: number; x: number; y: number } | undefined>(undefined);
   const elementDragRef = useRef<ElementTransformDragProps | undefined>(undefined);
+  const rigAnchorDragRef = useRef<RigAnchorDrag | undefined>(undefined);
   const marqueeSelectionRef = useRef<MarqueeSelection | undefined>(undefined);
   const pendingPointerMoveRef = useRef<ScenarioPointerMove | undefined>(undefined);
   const pointerMoveFrameRef = useRef<number | undefined>(undefined);
   const [activeTool, setActiveTool] = useState<ScenarioTool>("select");
+  const [rigDraft, setRigDraft] = useState<RigDraft>();
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const [isZoomDropdownOpen, setIsZoomDropdownOpen] = useState(false);
   const [smartGuides, setSmartGuides] = useState<SmartGuideState>({});
@@ -320,6 +512,16 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [isWindowStemOpen, setIsWindowStemOpen] = useState(false);
   const [isWindowOperationOpen, setIsWindowOperationOpen] = useState(false);
   const [isWindowTransitionOpen, setIsWindowTransitionOpen] = useState(false);
+  const [isPresetDropdownOpen, setIsPresetDropdownOpen] = useState(false);
+  const [operationPresets, setOperationPresets] = useState<OperationPresetProps[]>([]);
+  const [frequencyPresets, setFrequencyPresets] = useState<OperationPresetProps[]>([]);
+  const [vocalPresets, setVocalPresets] = useState<OperationPresetProps[]>([]);
+  const [isFrequencyPresetDropdownOpen, setIsFrequencyPresetDropdownOpen] = useState(false);
+  const [isVocalPresetDropdownOpen, setIsVocalPresetDropdownOpen] = useState(false);
+  const [isPresetNameWindowVisible, setIsPresetNameWindowVisible] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const [presetCategory, setPresetCategory] = useState<OperationPresetCategory>("operation");
+  const [isSavingPreset, setIsSavingPreset] = useState(false);
   const [isFrequencyWindowVisible, setIsFrequencyWindowVisible] = useState(false);
   const [isVocalWindowVisible, setIsVocalWindowVisible] = useState(false);
   const [vocalProgress, setVocalProgress] = useState<RitraceProgressProps>();
@@ -329,9 +531,15 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [isVocalResponseWindowVisible, setIsVocalResponseWindowVisible] = useState(false);
   const [vocalResponseDraft, setVocalResponseDraft] = useState<VocalResponseProps>();
   const [frequencyMaximumHz, setFrequencyMaximumHz] = useState(22_050);
+  const [frequencyView, setFrequencyView] = useState({ minHz: 0, maxHz: 22_050 });
   const frequencyMaximumRef = useRef(22_050);
   const frequencyCanvasRef = useRef<HTMLCanvasElement>(null);
-  const frequencyDragRef = useRef<"minHz" | "maxHz" | undefined>(undefined);
+  const frequencyDragRef = useRef<"minHz" | "maxHz" | "range" | undefined>(undefined);
+  const frequencyRangeDragRef = useRef<{
+    startClientX: number;
+    minHz: number;
+    maxHz: number;
+  } | undefined>(undefined);
   const frequencySmoothedRef = useRef<Record<string, number>>({});
   const vocalSmoothedRef = useRef<Record<string, number>>({});
   const frequencyLastTimeRef = useRef<number | undefined>(undefined);
@@ -417,13 +625,59 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const availableStems = globalStems ?? [];
   const frequencyResponse = frequencyDraft ?? selectedElement?.frequencyResponse;
   const vocalResponse = vocalResponseDraft ?? selectedElement?.vocalResponse;
+  const frequencyViewSpan = Math.max(1, frequencyView.maxHz - frequencyView.minHz);
+  const frequencyPositionPercent = (value: number) => ((value - frequencyView.minHz) / frequencyViewSpan) * 100;
+  const frequencyRangeLeftPercent = frequencyResponse
+    ? Math.max(0, Math.min(100, frequencyPositionPercent(frequencyResponse.minHz)))
+    : 0;
+  const frequencyRangeRightPercent = frequencyResponse
+    ? Math.max(0, Math.min(100, frequencyPositionPercent(frequencyResponse.maxHz)))
+    : 0;
   const editingOperation = selectedElement?.operations.find(
     (operation) => operation.id === editingOperationId,
   );
+
+  const setPresetsForCategory = (category: OperationPresetCategory, presets: OperationPresetProps[]) => {
+    if (category === "operation") setOperationPresets(presets);
+    else if (category === "frequency") setFrequencyPresets(presets);
+    else setVocalPresets(presets);
+  };
+
+  const loadPresets = (category: OperationPresetCategory) => operationPresetService.list(category)
+    .then((presets) => setPresetsForCategory(category, presets))
+    .catch((error) => setAlert({
+      type: "error",
+      message: error instanceof Error ? error.message : typeof error === "string" ? error : "Não foi possível listar os presets.",
+    }));
+
+  useEffect(() => {
+    if (!isOperationWindowVisible) return;
+    let cancelled = false;
+    void operationPresetService.list("operation")
+      .then((presets) => {
+        if (!cancelled) setOperationPresets(presets);
+      })
+      .catch((error) => {
+        if (!cancelled) setAlert({
+          type: "error",
+          message: error instanceof Error ? error.message : typeof error === "string" ? error : "Não foi possível listar os presets.",
+        });
+    });
+    return () => { cancelled = true; };
+  }, [isOperationWindowVisible, setAlert]);
+  useEffect(() => {
+    if (!isFrequencyWindowVisible) return;
+    void loadPresets("frequency");
+  }, [isFrequencyWindowVisible]);
+  useEffect(() => {
+    if (!isVocalResponseWindowVisible) return;
+    void loadPresets("vocal");
+  }, [isVocalResponseWindowVisible]);
   const layerElements = elements;
+  const rigResponsiveElementIds = useMemo(() => getRigResponsiveElementIds(elements), [elements]);
   const responseElements = useMemo(
-    () => elements.filter((element) => element.visible && hasElementResponse(element)),
-    [elements],
+    () => elements.filter((element) => element.visible && rigResponsiveElementIds.has(element.id)),
+    [elements, rigResponsiveElementIds],
   );
   const reorderLayer = (sourceId: string, targetId: string, direction: "top" | "bottom" = "top") => {
     if (sourceId === targetId) return;
@@ -546,14 +800,86 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
   const centerSelectedElements = (axis: "horizontal" | "vertical" | "both") => {
     if (!scenario || selectedElementIds.length === 0) return;
-    setElements((currentElements) => currentElements.map((element) => {
-      if (!selectedElementIdsSet.has(element.id)) return element;
-      return {
-        ...element,
-        x: axis === "vertical" ? element.x : scenario.width / 2,
-        y: axis === "horizontal" ? element.y : scenario.height / 2,
-      };
-    }));
+    setElements((currentElements) => {
+      const byId = new Map(currentElements.map((element) => [element.id, element]));
+      const rootSelections = currentElements.filter((element) => {
+        if (!selectedElementIdsSet.has(element.id)) return false;
+        let parentId = element.rigParentId;
+        while (parentId) {
+          if (selectedElementIdsSet.has(parentId)) return false;
+          parentId = byId.get(parentId)?.rigParentId;
+        }
+        return true;
+      });
+      return rootSelections.reduce((nextElements, selected) => {
+        const current = nextElements.find((element) => element.id === selected.id);
+        if (!current) return nextElements;
+        const centered = {
+          ...current,
+          x: axis === "vertical" ? current.x : scenario.width / 2,
+          y: axis === "horizontal" ? current.y : scenario.height / 2,
+        };
+        return transformRigDescendants(
+          nextElements,
+          current,
+          centered,
+          getRigDescendants(nextElements, current.id),
+        );
+      }, currentElements);
+    });
+  };
+
+  const handleRigElementPointerDown = (
+    event: globalThis.PointerEvent,
+    elementId: string,
+    point: { x: number; y: number },
+  ) => {
+    if (activeTool !== "rig" || event.button !== 0) return;
+    const element = elements.find((item) => item.id === elementId);
+    if (!element) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const response = responsesByElementRef.current.get(elementId) ?? defaultElementResponse;
+    const anchor = getElementNormalizedPoint(point, element, response);
+    if (!rigDraft) {
+      setRigDraft({ parentId: elementId, parentAnchorX: anchor.x, parentAnchorY: anchor.y });
+      selectElement(elementId);
+      return;
+    }
+    if (rigDraft.parentId === elementId) {
+      setAlert({ type: "warning", message: "O pai e o filho do rig precisam ser componentes diferentes." });
+      return;
+    }
+    if (wouldCreateRigCycle(elements, rigDraft.parentId, elementId)) {
+      setAlert({ type: "warning", message: "Esse vínculo criaria um ciclo no rig." });
+      return;
+    }
+    setElements((currentElements) => currentElements.map((current) => current.id === elementId ? {
+      ...current,
+      rigParentId: rigDraft.parentId,
+      rigParentAnchorX: rigDraft.parentAnchorX,
+      rigParentAnchorY: rigDraft.parentAnchorY,
+      rigChildAnchorX: anchor.x,
+      rigChildAnchorY: anchor.y,
+    } : current));
+    selectElement(elementId);
+    setRigDraft(undefined);
+  };
+
+  const startRigAnchorDrag = (
+    event: globalThis.PointerEvent,
+    childId: string,
+    role: RigAnchorRole,
+  ) => {
+    if (activeTool !== "select" || event.button !== 0) return;
+    const child = elements.find((element) => element.id === childId);
+    if (!child?.rigParentId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    rigAnchorDragRef.current = { pointerId: event.pointerId, childId, role };
+    viewport.setPointerCapture(event.pointerId);
   };
 
   const updateEditingOperation = (
@@ -566,6 +892,81 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         operation.id === editingOperationId ? updater(operation) : operation,
       ),
     }));
+  };
+
+  const importOperationPreset = (preset: OperationPresetProps) => {
+    if (preset.category !== "operation") return;
+    const { id: _presetId, ...configuration } = preset.operation as ScenarioElementOperationProps;
+    updateEditingOperation((operation) => ({ ...configuration, id: operation.id }));
+    setIsPresetDropdownOpen(false);
+    setIsWindowStemOpen(false);
+    setIsWindowOperationOpen(false);
+    setIsWindowTransitionOpen(false);
+    setAlert({ type: "success", message: `Preset “${preset.name}” aplicado.` });
+  };
+
+  const importFrequencyPreset = (preset: OperationPresetProps) => {
+    if (preset.category !== "frequency") return;
+    setFrequencyDraft({ ...(preset.operation as FrequencyResponseProps) });
+    setIsFrequencyPresetDropdownOpen(false);
+    setIsFrequencyOperationOpen(false);
+    setIsFrequencyTransitionOpen(false);
+    setAlert({ type: "success", message: `Preset “${preset.name}” aplicado.` });
+  };
+
+  const importVocalPreset = (preset: OperationPresetProps) => {
+    if (preset.category !== "vocal") return;
+    setVocalResponseDraft({ ...(preset.operation as VocalResponseProps) });
+    setIsVocalPresetDropdownOpen(false);
+    setIsFrequencyOperationOpen(false);
+    setIsFrequencyTransitionOpen(false);
+    setAlert({ type: "success", message: `Preset “${preset.name}” aplicado.` });
+  };
+
+  const openPresetNameWindow = (category: OperationPresetCategory = "operation") => {
+    const hasConfiguration = category === "operation"
+      ? Boolean(editingOperation)
+      : category === "frequency"
+        ? Boolean(frequencyResponse)
+        : Boolean(vocalResponse);
+    if (!hasConfiguration) return;
+    setPresetCategory(category);
+    setPresetName("");
+    setIsPresetDropdownOpen(false);
+    setIsFrequencyPresetDropdownOpen(false);
+    setIsVocalPresetDropdownOpen(false);
+    setIsWindowStemOpen(false);
+    setIsWindowOperationOpen(false);
+    setIsWindowTransitionOpen(false);
+    setIsPresetNameWindowVisible(true);
+  };
+
+  const saveOperationPreset = async () => {
+    const name = presetName.trim();
+    const configuration: OperationPresetConfiguration | undefined = presetCategory === "operation"
+      ? editingOperation
+      : presetCategory === "frequency"
+        ? frequencyResponse
+        : vocalResponse;
+    if (!configuration || !name || isSavingPreset) {
+      if (!name) setAlert({ type: "warning", message: "Digite um nome para o preset." });
+      return;
+    }
+    setIsSavingPreset(true);
+    try {
+      await operationPresetService.save(name, presetCategory, configuration);
+      setPresetsForCategory(presetCategory, await operationPresetService.list(presetCategory));
+      setIsPresetNameWindowVisible(false);
+      setPresetName("");
+      setAlert({ type: "success", message: `Preset “${name}” salvo.` });
+    } catch (error) {
+      setAlert({
+        type: "error",
+        message: error instanceof Error ? error.message : typeof error === "string" ? error : "Não foi possível salvar o preset.",
+      });
+    } finally {
+      setIsSavingPreset(false);
+    }
   };
 
   const addOperation = () => {
@@ -581,6 +982,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const addFrequencyResponse = () => {
     if (!selectedElement || selectedElement.frequencyResponse) return;
     setFrequencyDraft({ minHz: 20, maxHz: frequencyMaximumHz, strength: 1 });
+    setFrequencyView({ minHz: 0, maxHz: frequencyMaximumHz });
     setIsFrequencyWindowVisible(true);
   };
 
@@ -612,6 +1014,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const openFrequencyResponse = () => {
     if (!selectedElement?.frequencyResponse) return;
     setFrequencyDraft({ ...selectedElement.frequencyResponse });
+    setFrequencyView({ minHz: 0, maxHz: frequencyMaximumHz });
     setIsFrequencyWindowVisible(true);
   };
 
@@ -633,7 +1036,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const setFrequencyResponseNumber = (
-    field: keyof Pick<FrequencyResponseProps, "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "strength" | "attackSeconds" | "releaseSeconds">,
+    field: ModulatorNumericField,
     value: string,
   ) => {
     if (value === "") {
@@ -641,23 +1044,34 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       return;
     }
     const numericValue = Number(value);
-    if (!Number.isFinite(numericValue) || numericValue < 0 && !field.startsWith("translation")) return;
-    if (field === "repetitions" && (!Number.isInteger(numericValue) || numericValue < 1)) return;
+    if (!Number.isFinite(numericValue) || numericValue < 0 && field !== "strength" && !isSignedOperationField(field)) return;
+    if (field !== "strength" && isRepetitionField(field) && (!Number.isInteger(numericValue) || numericValue < 1)) return;
     updateFrequencyResponse((config) => ({
       ...config,
-      [field]: field === "strength" ? Math.min(1, numericValue) : numericValue,
+      [field]: field === "strength"
+        ? Math.min(3, numericValue)
+        : field === "wanderOpposition"
+          ? Math.min(1, numericValue)
+          : numericValue,
     }));
   };
 
   const setVocalResponseNumber = (
-    field: keyof Pick<VocalResponseProps, "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "strength" | "attackSeconds" | "releaseSeconds">,
+    field: ModulatorNumericField,
     value: string,
   ) => {
     if (value === "") return updateVocalResponse((config) => ({ ...config, [field]: undefined }));
     const numericValue = Number(value);
-    if (!Number.isFinite(numericValue) || (numericValue < 0 && !field.startsWith("translation"))) return;
-    if (field === "repetitions" && (!Number.isInteger(numericValue) || numericValue < 1)) return;
-    updateVocalResponse((config) => ({ ...config, [field]: field === "strength" ? Math.min(1, numericValue) : numericValue }));
+    if (!Number.isFinite(numericValue) || (numericValue < 0 && field !== "strength" && !isSignedOperationField(field))) return;
+    if (field !== "strength" && isRepetitionField(field) && (!Number.isInteger(numericValue) || numericValue < 1)) return;
+    updateVocalResponse((config) => ({
+      ...config,
+      [field]: field === "strength"
+        ? Math.min(3, numericValue)
+        : field === "wanderOpposition"
+          ? Math.min(1, numericValue)
+          : numericValue,
+    }));
   };
 
   const updateFrequencyBoundary = (boundary: "minHz" | "maxHz", value: number) => {
@@ -683,16 +1097,60 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const handleFrequencyHandlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
-    const boundary = frequencyDragRef.current;
+    const dragMode = frequencyDragRef.current;
     const canvas = frequencyCanvasRef.current;
-    if (!boundary || !canvas) return;
+    if (!dragMode || !canvas) return;
     const bounds = canvas.getBoundingClientRect();
+    if (bounds.width <= 0) return;
+    const viewSpan = frequencyView.maxHz - frequencyView.minHz;
+    if (dragMode === "range") {
+      const drag = frequencyRangeDragRef.current;
+      if (!drag) return;
+      const rangeWidth = drag.maxHz - drag.minHz;
+      const deltaHz = ((event.clientX - drag.startClientX) / bounds.width) * viewSpan;
+      const minHz = Math.max(0, Math.min(frequencyMaximumHz - rangeWidth, drag.minHz + deltaHz));
+      updateFrequencyResponse((config) => ({ ...config, minHz, maxHz: minHz + rangeWidth }));
+      return;
+    }
     const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-    updateFrequencyBoundary(boundary, ratio * frequencyMaximumHz);
+    updateFrequencyBoundary(dragMode, frequencyView.minHz + ratio * viewSpan);
   };
 
   const stopFrequencyHandleDrag = () => {
     frequencyDragRef.current = undefined;
+    frequencyRangeDragRef.current = undefined;
+  };
+
+  const handleFrequencyRangePointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    if (!frequencyResponse || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    frequencyDragRef.current = "range";
+    frequencyRangeDragRef.current = {
+      startClientX: event.clientX,
+      minHz: frequencyResponse.minHz,
+      maxHz: frequencyResponse.maxHz,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleFrequencySpectrumWheel = (event: React.WheelEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.width <= 0) return;
+    const cursorRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    setFrequencyView((current) => {
+      const currentSpan = current.maxHz - current.minHz;
+      const minimumSpan = Math.min(100, frequencyMaximumHz);
+      const nextSpan = Math.max(
+        minimumSpan,
+        Math.min(frequencyMaximumHz, currentSpan * Math.exp(event.deltaY * 0.0015)),
+      );
+      const anchorHz = current.minHz + cursorRatio * currentSpan;
+      const minHz = Math.max(0, Math.min(frequencyMaximumHz - nextSpan, anchorHz - cursorRatio * nextSpan));
+      return { minHz, maxHz: minHz + nextSpan };
+    });
   };
 
   useEffect(() => {
@@ -708,8 +1166,16 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       if (data) {
         const maximumHz = data.sampleRate / 2;
         if (maximumHz !== frequencyMaximumRef.current) {
+          const previousMaximum = frequencyMaximumRef.current;
           frequencyMaximumRef.current = maximumHz;
           setFrequencyMaximumHz(maximumHz);
+          setFrequencyView((current) => {
+            const wasShowingEverything = current.minHz === 0 && Math.abs(current.maxHz - previousMaximum) < 1;
+            if (wasShowingEverything) return { minHz: 0, maxHz: maximumHz };
+            const span = Math.min(maximumHz, current.maxHz - current.minHz);
+            const minHz = Math.max(0, Math.min(maximumHz - span, current.minHz));
+            return { minHz, maxHz: minHz + span };
+          });
         }
         const canvas = frequencyCanvasRef.current;
         canvasContext ??= canvas?.getContext("2d") ?? null;
@@ -726,12 +1192,16 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           }
           context.clearRect(0, 0, width, height);
           context.fillStyle = "#c77dff";
-          const barCount = Math.min(256, data.values.length);
-          const binsPerBar = data.values.length / barCount;
+          const nyquist = data.sampleRate / 2;
+          const firstBin = Math.max(0, Math.min(data.values.length - 1, Math.floor((frequencyView.minHz / nyquist) * data.values.length)));
+          const lastBin = Math.max(firstBin + 1, Math.min(data.values.length, Math.ceil((frequencyView.maxHz / nyquist) * data.values.length)));
+          const visibleBinCount = lastBin - firstBin;
+          const barCount = Math.min(256, visibleBinCount);
+          const binsPerBar = visibleBinCount / barCount;
           const barWidth = width / barCount;
           for (let index = 0; index < barCount; index += 1) {
-            const start = Math.floor(index * binsPerBar);
-            const end = Math.max(start + 1, Math.floor((index + 1) * binsPerBar));
+            const start = firstBin + Math.floor(index * binsPerBar);
+            const end = Math.min(lastBin, Math.max(start + 1, firstBin + Math.floor((index + 1) * binsPerBar)));
             let peak = 0;
             for (let bin = start; bin < end; bin += 1) peak = Math.max(peak, data.values[bin]);
             const barHeight = (peak / 255) * height;
@@ -748,7 +1218,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
       canvasContext = null;
     };
-  }, [isFrequencyWindowVisible]);
+  }, [isFrequencyWindowVisible, frequencyView.minHz, frequencyView.maxHz]);
 
   const addComponent = () => {
     if (!scenario) return;
@@ -851,8 +1321,18 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       delete vocalSmoothedRef.current[elementId];
     });
     setElements((currentElements) =>
-      currentElements.filter((element) => !selectedElementIdsSet.has(element.id)),
+      currentElements
+        .filter((element) => !selectedElementIdsSet.has(element.id))
+        .map((element) => element.rigParentId && selectedElementIdsSet.has(element.rigParentId) ? {
+          ...element,
+          rigParentId: undefined,
+          rigParentAnchorX: undefined,
+          rigParentAnchorY: undefined,
+          rigChildAnchorX: undefined,
+          rigChildAnchorY: undefined,
+        } : element),
     );
+    setRigDraft((draft) => draft && selectedElementIdsSet.has(draft.parentId) ? undefined : draft);
     selectElement();
     setSmartGuides({});
   };
@@ -863,7 +1343,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const setEditingOperationNumber = (
-    field: "value" | "translationX" | "translationY" | "translationZ" | "repetitions" | "attackSeconds" | "releaseSeconds",
+    field: OperationNumericField,
     value: string,
   ) => {
     if (value === "") {
@@ -871,9 +1351,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       return;
     }
     const numberValue = Number(value);
-    if (!Number.isFinite(numberValue) || (numberValue < 0 && !field.startsWith("translation"))) return;
-    if (field === "repetitions" && (!Number.isInteger(numberValue) || numberValue < 1)) return;
-    updateEditingOperation((operation) => ({ ...operation, [field]: numberValue }));
+    if (!Number.isFinite(numberValue) || (numberValue < 0 && !isSignedOperationField(field))) return;
+    if (isRepetitionField(field) && (!Number.isInteger(numberValue) || numberValue < 1)) return;
+    updateEditingOperation((operation) => ({
+      ...operation,
+      [field]: field === "wanderOpposition" ? Math.min(1, numberValue) : numberValue,
+    }));
   };
 
   const syncStemResponseWithPlayer = (currentTime: number) => {
@@ -928,12 +1411,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       latestEventsByStem.set(stemId, match);
       return match;
     };
-    const nextResponses =
+    const rawResponses =
       responseElements.map((element) => {
         const response = element.operations.reduce(
           (currentResponse, operation) => {
             if (!operation.operation) return currentResponse;
-            if ((operation.operation === "scale" || operation.operation === "rotation") && operation.value === undefined) return currentResponse;
+            if (["scale", "width", "height", "rotation"].includes(operation.operation) && operation.value === undefined) return currentResponse;
             const event = getLatestEvent(operation.stemId);
             const elapsed = event ? currentTime - event.timeSeconds : 0;
             const attack = operation.attackSeconds ?? 0;
@@ -949,7 +1432,14 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             if (intensity <= 0) return currentResponse;
             const duration = attack + release;
             const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
-            return applyResponseOperation(currentResponse, operation, intensity, progress);
+            return applyResponseOperation(
+              currentResponse,
+              operation,
+              intensity,
+              progress,
+              `${element.id}:${operation.id}:${event?.timeSeconds ?? 0}`,
+              element.opacity,
+            );
           },
           { ...defaultElementResponse },
         );
@@ -977,7 +1467,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           // No modulador contínuo a fase do Wiggle vem do relógio do áudio;
           // passar o tempo evita a fase nula fixa (sin(2πn)) e mantém a
           // oscilação derivada do mesmo tick central do player.
-          ? applyResponseOperation(response, frequency, frequencyForce, currentTime)
+          ? applyResponseOperation(response, frequency, frequencyForce, currentTime, `${element.id}:frequency`, element.opacity)
           : response;
         const vocal = element.vocalResponse;
         const rawVocalForce = vocal?.operation ? Math.min(1, vocalIntensity * (vocal.strength ?? 1)) : 0;
@@ -987,15 +1477,24 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         const vocalForce = previousVocalForce + (rawVocalForce - previousVocalForce) * vocalSmoothing;
         if (vocal) vocalSmoothedRef.current[element.id] = vocalForce;
         const responseWithVocal = vocalForce > 0 && vocal
-          ? applyResponseOperation(finalResponse, vocal, applyStemResponseTransition(vocalForce, vocal.transition), currentTime)
+          ? applyResponseOperation(finalResponse, vocal, applyStemResponseTransition(vocalForce, vocal.transition), currentTime, `${element.id}:vocal`, element.opacity)
           : finalResponse;
         return { id: element.id, ...responseWithVocal };
       });
+    const rawResponsesById = new Map(rawResponses.map(({ id, ...response }) => [id, response]));
+    const composedResponses = composeRigResponses(elements, rawResponsesById, rigResponsiveElementIds);
+    const nextResponses = responseElements.map((element) => ({
+      id: element.id,
+      ...(composedResponses.get(element.id) ?? rawResponsesById.get(element.id) ?? defaultElementResponse),
+    }));
     const previousResponses = responseValuesRef.current;
     const responsesAreEqual = previousResponses.length === nextResponses.length && nextResponses.every((response, index) => {
       const previous = previousResponses[index];
       return previous?.id === response.id
         && previous.scale === response.scale
+        && previous.widthScale === response.widthScale
+        && previous.heightScale === response.heightScale
+        && previous.opacity === response.opacity
         && previous.rotation === response.rotation
         && previous.translationX === response.translationX
         && previous.translationY === response.translationY
@@ -1154,6 +1653,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     setIsVocalResponseWindowVisible(false);
     setVocalResponseDraft(undefined);
     frequencyDragRef.current = undefined;
+    frequencyRangeDragRef.current = undefined;
   }, [selectedElementId]);
 
   const handleZoom = (event: WheelEvent<HTMLDivElement>) => {
@@ -1205,6 +1705,11 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (activeTool === "rig" && event.button === 0) {
+      setRigDraft(undefined);
+      selectElement();
+      return;
+    }
     if (activeTool === "select" && event.button === 0 && event.ctrlKey) {
       const point = getScenarioPoint(event.clientX, event.clientY);
       if (!point) return;
@@ -1244,6 +1749,24 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         .map((element) => element.id);
       setSelectedElementIds(selectedIds);
       setSelectedElementId(selectedIds[0]);
+      return;
+    }
+    const rigAnchorDrag = rigAnchorDragRef.current;
+    if (rigAnchorDrag?.pointerId === event.pointerId) {
+      const point = getScenarioPoint(event.clientX, event.clientY);
+      if (!point) return;
+      const child = elements.find((element) => element.id === rigAnchorDrag.childId);
+      const targetId = rigAnchorDrag.role === "parent" ? child?.rigParentId : child?.id;
+      const target = targetId ? elements.find((element) => element.id === targetId) : undefined;
+      if (!child || !target) return;
+      const response = responsesByElementRef.current.get(target.id) ?? defaultElementResponse;
+      const anchor = getElementNormalizedPoint(point, target, response);
+      setElements((currentElements) => currentElements.map((element) => {
+        if (element.id !== rigAnchorDrag.childId) return element;
+        return rigAnchorDrag.role === "parent"
+          ? { ...element, rigParentAnchorX: anchor.x, rigParentAnchorY: anchor.y }
+          : { ...element, rigChildAnchorX: anchor.x, rigChildAnchorY: anchor.y };
+      }));
       return;
     }
     const storedElementDrag = elementDragRef.current;
@@ -1349,8 +1872,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           position = constrainElementPosition(position.x, position.y, width, height, startTransform.rotation);
         }
         setSmartGuides(nextGuides);
-        setElements((currentElements) => currentElements.map((element) =>
-          element.id === activeElementDrag.elementId ? { ...startTransform, ...position } : element,
+        const nextTransform = { ...startTransform, ...position };
+        setElements((currentElements) => transformRigDescendants(
+          currentElements,
+          startTransform,
+          nextTransform,
+          activeElementDrag.rigDescendantStarts,
         ));
       }
       if (activeElementDrag.mode.startsWith("resize-")) {
@@ -1485,10 +2012,17 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           height,
           startTransform.rotation,
         );
-        setElements((currentElements) => currentElements.map((element) =>
-          element.id === activeElementDrag.elementId
-            ? { ...startTransform, ...position, scaleX: width / circleBaseSize, scaleY: height / circleBaseSize }
-            : element,
+        const nextTransform = {
+          ...startTransform,
+          ...position,
+          scaleX: width / circleBaseSize,
+          scaleY: height / circleBaseSize,
+        };
+        setElements((currentElements) => transformRigDescendants(
+          currentElements,
+          startTransform,
+          nextTransform,
+          activeElementDrag.rigDescendantStarts,
         ));
       }
       if (activeElementDrag.mode === "rotate") {
@@ -1507,10 +2041,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           x: pivotWorld.x - pivotOffset.x,
           y: pivotWorld.y - pivotOffset.y,
         };
-        setElements((currentElements) => currentElements.map((element) =>
-          element.id === activeElementDrag.elementId
-            ? { ...startTransform, ...nextCenter, rotation: nextRotation }
-            : element,
+        const nextTransform = { ...startTransform, ...nextCenter, rotation: nextRotation };
+        setElements((currentElements) => transformRigDescendants(
+          currentElements,
+          startTransform,
+          nextTransform,
+          activeElementDrag.rigDescendantStarts,
         ));
       }
       return;
@@ -1557,6 +2093,13 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
 
   const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
     if (pendingPointerMoveRef.current?.pointerId === event.pointerId) flushPointerMove();
+    if (rigAnchorDragRef.current?.pointerId === event.pointerId) {
+      rigAnchorDragRef.current = undefined;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
     if (marqueeSelectionRef.current?.pointerId === event.pointerId) {
       marqueeSelectionRef.current = undefined;
       setMarqueeSelection(undefined);
@@ -1635,6 +2178,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       guideTargets: elements
         .filter((item) => item.id !== transformElement.id && item.visible)
         .map((item) => ({ id: item.id, bounds: getElementGeometry(item) })),
+      rigDescendantStarts: getRigDescendants(elements, transformElement.id),
     };
     selectElement(transformElement.id);
     viewport.setPointerCapture(event.pointerId);
@@ -1658,10 +2202,16 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
       const key = event.key.toLowerCase();
       if (key === "h") {
+        setRigDraft(undefined);
         setActiveTool("hand");
         event.preventDefault();
       } else if (key === "v") {
+        setRigDraft(undefined);
         setActiveTool("select");
+        event.preventDefault();
+      } else if (key === "r") {
+        setRigDraft(undefined);
+        setActiveTool("rig");
         event.preventDefault();
       } else if (key === "g") {
         setSmartGuidesEnabled((enabled) => !enabled);
@@ -1733,20 +2283,41 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       >
         {vocalResponse && (
           <SE.OperationWindowBody>
+            <SE.PresetToolbar>
+              <Dropdown
+                title="Importar preset"
+                width="100%"
+                isOpen={isVocalPresetDropdownOpen}
+                onClick={() => {
+                  setIsVocalPresetDropdownOpen((open) => !open);
+                  setIsFrequencyOperationOpen(false);
+                  setIsFrequencyTransitionOpen(false);
+                }}
+              >
+                {vocalPresets.length > 0 ? vocalPresets.map((preset) => (
+                  <DropdownOption key={preset.name} type="button" onClick={() => importVocalPreset(preset)}>{preset.name}</DropdownOption>
+                )) : <DropdownOption type="button" disabled>Nenhum preset vocal salvo</DropdownOption>}
+              </Dropdown>
+              <SE.PresetExportButton type="button" onClick={() => openPresetNameWindow("vocal")}>Exportar</SE.PresetExportButton>
+            </SE.PresetToolbar>
             <SE.FrequencyForm>
               <Dropdown title={`Operação: ${vocalResponse.operation ? stemResponseOperationLabels[vocalResponse.operation] : "Nenhuma"}`} width="100%" isOpen={isFrequencyOperationOpen} onClick={() => { setIsFrequencyOperationOpen((open) => !open); setIsFrequencyTransitionOpen(false); }}>
-                {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => <DropdownOption key={operation ?? "none"} onClick={() => { updateVocalResponse((config) => ({ ...config, operation })); setIsFrequencyOperationOpen(false); }}>{operation ? stemResponseOperationLabels[operation] : "Nenhuma"}</DropdownOption>)}
+                {([undefined, "scale", "width", "height", "rotation", "opacity", "translation", "wiggle", "random", "wander"] as const).map((operation) => <DropdownOption key={operation ?? "none"} onClick={() => { updateVocalResponse((config) => ({ ...config, operation })); setIsFrequencyOperationOpen(false); }}>{operation ? stemResponseOperationLabels[operation] : "Nenhuma"}</DropdownOption>)}
               </Dropdown>
               <Dropdown title={`Transição: ${vocalResponse.transition ? stemResponseTransitionLabels[vocalResponse.transition] : "Linear"}`} width="100%" isOpen={isFrequencyTransitionOpen} onClick={() => { setIsFrequencyTransitionOpen((open) => !open); setIsFrequencyOperationOpen(false); }}>
                 {(["linear", "ease", "ease-in", "ease-out", "ease-in-out"] as const).map((transition) => <DropdownOption key={transition} onClick={() => { updateVocalResponse((config) => ({ ...config, transition })); setIsFrequencyTransitionOpen(false); }}>{stemResponseTransitionLabels[transition]}</DropdownOption>)}
               </Dropdown>
-              {vocalResponse.operation === "translation" || vocalResponse.operation === "wiggle" ? <>
+              {vocalResponse.operation === "random" ? (
+                <RandomOperationInputs operation={vocalResponse} onChange={setVocalResponseNumber} />
+              ) : vocalResponse.operation === "wander" ? (
+                <WanderOperationInputs operation={vocalResponse} onChange={setVocalResponseNumber} />
+              ) : vocalResponse.operation === "translation" || vocalResponse.operation === "wiggle" ? <>
                 <TitledInput title="X" type="number" value={vocalResponse.translationX ?? ""} onChange={(event) => setVocalResponseNumber("translationX", event.currentTarget.value)} />
                 <TitledInput title="Y" type="number" value={vocalResponse.translationY ?? ""} onChange={(event) => setVocalResponseNumber("translationY", event.currentTarget.value)} />
                 <TitledInput title="Z" type="number" value={vocalResponse.translationZ ?? ""} onChange={(event) => setVocalResponseNumber("translationZ", event.currentTarget.value)} />
                 {vocalResponse.operation === "wiggle" && <TitledInput title="Repetições" type="number" min="1" step="1" value={vocalResponse.repetitions ?? 1} onChange={(event) => setVocalResponseNumber("repetitions", event.currentTarget.value)} />}
               </> : <TitledInput title="Valor" type="number" value={vocalResponse.value ?? ""} onChange={(event) => setVocalResponseNumber("value", event.currentTarget.value)} />}
-              <TitledInput title="Força" type="number" min="0" max="1" step="0.01" value={vocalResponse.strength ?? 1} onChange={(event) => setVocalResponseNumber("strength", event.currentTarget.value)} />
+              <TitledInput title="Força" type="number" min="0" max="3" step="0.01" value={vocalResponse.strength ?? 1} onChange={(event) => setVocalResponseNumber("strength", event.currentTarget.value)} />
               <TitledInput title="Ataque (s)" type="number" min="0" value={vocalResponse.attackSeconds ?? ""} onChange={(event) => setVocalResponseNumber("attackSeconds", event.currentTarget.value)} />
               <TitledInput title="Liberação (s)" type="number" min="0" value={vocalResponse.releaseSeconds ?? ""} onChange={(event) => setVocalResponseNumber("releaseSeconds", event.currentTarget.value)} />
             </SE.FrequencyForm>
@@ -1760,6 +2331,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
           setIsFrequencyWindowVisible(false);
           setFrequencyDraft(undefined);
           frequencyDragRef.current = undefined;
+          frequencyRangeDragRef.current = undefined;
         }}
         title="Modulador de frequência"
         height="420px"
@@ -1767,17 +2339,39 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       >
         {frequencyResponse && (
           <SE.FrequencyWindowBody>
+            <SE.PresetToolbar>
+              <Dropdown
+                title="Importar preset"
+                width="100%"
+                isOpen={isFrequencyPresetDropdownOpen}
+                onClick={() => {
+                  setIsFrequencyPresetDropdownOpen((open) => !open);
+                  setIsFrequencyOperationOpen(false);
+                  setIsFrequencyTransitionOpen(false);
+                }}
+              >
+                {frequencyPresets.length > 0 ? frequencyPresets.map((preset) => (
+                  <DropdownOption key={preset.name} type="button" onClick={() => importFrequencyPreset(preset)}>{preset.name}</DropdownOption>
+                )) : <DropdownOption type="button" disabled>Nenhum preset de frequência salvo</DropdownOption>}
+              </Dropdown>
+              <SE.PresetExportButton type="button" onClick={() => openPresetNameWindow("frequency")}>Exportar</SE.PresetExportButton>
+            </SE.PresetToolbar>
             <SE.FrequencyForm>
-              <SE.FrequencySpectrum>
+              <SE.FrequencySpectrum onWheel={handleFrequencySpectrumWheel} title="Use a roda do mouse para ampliar a frequência sob o cursor">
               <canvas ref={frequencyCanvasRef} />
               <SE.FrequencyRange
                 style={{
-                  left: `${(frequencyResponse.minHz / frequencyMaximumHz) * 100}%`,
-                  width: `${((frequencyResponse.maxHz - frequencyResponse.minHz) / frequencyMaximumHz) * 100}%`,
+                  left: `${frequencyRangeLeftPercent}%`,
+                  width: `${Math.max(0, frequencyRangeRightPercent - frequencyRangeLeftPercent)}%`,
                 }}
+                onPointerDown={handleFrequencyRangePointerDown}
+                onPointerMove={handleFrequencyHandlePointerMove}
+                onPointerUp={stopFrequencyHandleDrag}
+                onPointerCancel={stopFrequencyHandleDrag}
+                title="Arraste para mover a faixa selecionada"
               />
               <SE.FrequencyHandle
-                style={{ left: `${(frequencyResponse.minHz / frequencyMaximumHz) * 100}%` }}
+                style={{ left: `${frequencyPositionPercent(frequencyResponse.minHz)}%` }}
                 onPointerDown={(event) => handleFrequencyHandlePointerDown(event, "minHz")}
                 onPointerMove={handleFrequencyHandlePointerMove}
                 onPointerUp={stopFrequencyHandleDrag}
@@ -1785,7 +2379,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 aria-label="Frequência inicial"
               />
               <SE.FrequencyHandle
-                style={{ left: `${(frequencyResponse.maxHz / frequencyMaximumHz) * 100}%` }}
+                style={{ left: `${frequencyPositionPercent(frequencyResponse.maxHz)}%` }}
                 onPointerDown={(event) => handleFrequencyHandlePointerDown(event, "maxHz")}
                 onPointerMove={handleFrequencyHandlePointerMove}
                 onPointerUp={stopFrequencyHandleDrag}
@@ -1795,6 +2389,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               </SE.FrequencySpectrum>
               <SE.FrequencyLabels>
               <span>Início: {Math.round(frequencyResponse.minHz)} Hz</span>
+              <span>Visão: {Math.round(frequencyView.minHz)}–{Math.round(frequencyView.maxHz)} Hz</span>
               <span>Fim: {Math.round(frequencyResponse.maxHz)} Hz</span>
               </SE.FrequencyLabels>
               <Dropdown
@@ -1806,7 +2401,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 setIsFrequencyTransitionOpen(false);
               }}
             >
-              {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => (
+              {([undefined, "scale", "width", "height", "rotation", "opacity", "translation", "wiggle", "random", "wander"] as const).map((operation) => (
                 <DropdownOption
                   key={operation ?? "none"}
                   onClick={() => {
@@ -1839,7 +2434,11 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 </DropdownOption>
               ))}
               </Dropdown>
-              {frequencyResponse.operation === "translation" || frequencyResponse.operation === "wiggle" ? (
+              {frequencyResponse.operation === "random" ? (
+                <RandomOperationInputs operation={frequencyResponse} onChange={setFrequencyResponseNumber} />
+              ) : frequencyResponse.operation === "wander" ? (
+                <WanderOperationInputs operation={frequencyResponse} onChange={setFrequencyResponseNumber} />
+              ) : frequencyResponse.operation === "translation" || frequencyResponse.operation === "wiggle" ? (
               <>
                 <TitledInput title="X" type="number" value={frequencyResponse.translationX ?? ""} onChange={(event) => setFrequencyResponseNumber("translationX", event.currentTarget.value)} />
                 <TitledInput title="Y" type="number" value={frequencyResponse.translationY ?? ""} onChange={(event) => setFrequencyResponseNumber("translationY", event.currentTarget.value)} />
@@ -1849,7 +2448,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               ) : (
               <TitledInput title="Valor" type="number" value={frequencyResponse.value ?? ""} onChange={(event) => setFrequencyResponseNumber("value", event.currentTarget.value)} />
               )}
-              <TitledInput title="Força" type="number" min="0" max="1" step="0.01" value={frequencyResponse.strength ?? 1} onChange={(event) => setFrequencyResponseNumber("strength", event.currentTarget.value)} />
+              <TitledInput title="Força" type="number" min="0" max="3" step="0.01" value={frequencyResponse.strength ?? 1} onChange={(event) => setFrequencyResponseNumber("strength", event.currentTarget.value)} />
               <TitledInput title="Ataque (s)" type="number" min="0" value={frequencyResponse.attackSeconds ?? ""} onChange={(event) => setFrequencyResponseNumber("attackSeconds", event.currentTarget.value)} />
               <TitledInput title="Liberação (s)" type="number" min="0" value={frequencyResponse.releaseSeconds ?? ""} onChange={(event) => setFrequencyResponseNumber("releaseSeconds", event.currentTarget.value)} />
             </SE.FrequencyForm>
@@ -1869,6 +2468,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
         onClose={() => {
           setIsOperationWindowVisible(false);
           setEditingOperationId(undefined);
+          setIsPresetDropdownOpen(false);
           setIsWindowStemOpen(false);
           setIsWindowOperationOpen(false);
           setIsWindowTransitionOpen(false);
@@ -1879,12 +2479,38 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       >
         {editingOperation && (
           <SE.OperationWindowBody>
+            <SE.PresetToolbar>
+              <Dropdown
+                title="Importar preset"
+                width="100%"
+                isOpen={isPresetDropdownOpen}
+                onClick={() => {
+                  setIsPresetDropdownOpen((open) => !open);
+                  setIsWindowStemOpen(false);
+                  setIsWindowOperationOpen(false);
+                  setIsWindowTransitionOpen(false);
+                }}
+              >
+                {operationPresets.length > 0 ? operationPresets.map((preset) => (
+                  <DropdownOption key={preset.name} type="button" onClick={() => importOperationPreset(preset)}>
+                    {preset.name}
+                  </DropdownOption>
+                )) : (
+                  <DropdownOption type="button" disabled>Nenhum preset salvo</DropdownOption>
+                )}
+              </Dropdown>
+              <SE.PresetExportButton type="button" onClick={() => openPresetNameWindow("operation")}>
+                Exportar
+              </SE.PresetExportButton>
+            </SE.PresetToolbar>
+            <SE.FrequencyForm>
             <Dropdown
               title={`Stem: ${availableStems.find((stem) => stem.id === editingOperation.stemId)?.name ?? "Nenhum"}`}
               width="100%"
               isOpen={isWindowStemOpen}
               onClick={() => {
                 setIsWindowStemOpen((isOpen) => !isOpen);
+                setIsPresetDropdownOpen(false);
                 setIsWindowOperationOpen(false);
                 setIsWindowTransitionOpen(false);
               }}
@@ -1902,11 +2528,12 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               isOpen={isWindowOperationOpen}
               onClick={() => {
                 setIsWindowOperationOpen((isOpen) => !isOpen);
+                setIsPresetDropdownOpen(false);
                 setIsWindowStemOpen(false);
                 setIsWindowTransitionOpen(false);
               }}
             >
-              {([undefined, "scale", "rotation", "translation", "wiggle"] as const).map((operation) => (
+              {([undefined, "scale", "width", "height", "rotation", "opacity", "translation", "wiggle", "random", "wander"] as const).map((operation) => (
                 <DropdownOption key={operation ?? "none"} onClick={() => { updateEditingOperation((currentOperation) => ({ ...currentOperation, operation })); setIsWindowOperationOpen(false); }}>{operation ? stemResponseOperationLabels[operation] : "Nenhuma"}</DropdownOption>
               ))}
             </Dropdown>
@@ -1916,6 +2543,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               isOpen={isWindowTransitionOpen}
               onClick={() => {
                 setIsWindowTransitionOpen((isOpen) => !isOpen);
+                setIsPresetDropdownOpen(false);
                 setIsWindowStemOpen(false);
                 setIsWindowOperationOpen(false);
               }}
@@ -1932,7 +2560,11 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 </DropdownOption>
               ))}
             </Dropdown>
-            {editingOperation.operation === "translation" || editingOperation.operation === "wiggle" ? (
+            {editingOperation.operation === "random" ? (
+              <RandomOperationInputs operation={editingOperation} onChange={setEditingOperationNumber} />
+            ) : editingOperation.operation === "wander" ? (
+              <WanderOperationInputs operation={editingOperation} onChange={setEditingOperationNumber} />
+            ) : editingOperation.operation === "translation" || editingOperation.operation === "wiggle" ? (
               <>
                 <TitledInput title="X" type="number" value={editingOperation.translationX ?? ""} onChange={(event) => setEditingOperationNumber("translationX", event.currentTarget.value)} />
                 <TitledInput title="Y" type="number" value={editingOperation.translationY ?? ""} onChange={(event) => setEditingOperationNumber("translationY", event.currentTarget.value)} />
@@ -1946,6 +2578,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             )}
             <TitledInput title="Ataque (s)" type="number" min="0" value={editingOperation.attackSeconds ?? ""} onChange={(event) => setEditingOperationNumber("attackSeconds", event.currentTarget.value)} />
             <TitledInput title="Liberação (s)" type="number" min="0" value={editingOperation.releaseSeconds ?? ""} onChange={(event) => setEditingOperationNumber("releaseSeconds", event.currentTarget.value)} />
+            </SE.FrequencyForm>
             <SE.OperationActions>
               <SE.OperationSaveButton
                 type="button"
@@ -1960,6 +2593,42 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
             </SE.OperationActions>
           </SE.OperationWindowBody>
         )}
+      </Window>
+      <Window
+        isVisible={isPresetNameWindowVisible}
+        onClose={() => {
+          if (isSavingPreset) return;
+          setIsPresetNameWindowVisible(false);
+          setPresetName("");
+        }}
+        title="Salvar preset"
+        height="160px"
+        width="320px"
+        disableClose={isSavingPreset}
+      >
+        <SE.PresetNameBody>
+          <TitledInput
+            title="Nome do preset"
+            value={presetName}
+            autoFocus
+            maxLength={80}
+            onChange={(event) => setPresetName(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void saveOperationPreset();
+            }}
+          />
+          <SE.OperationActions>
+            <SE.OperationSaveButton type="button" disabled={isSavingPreset} onClick={() => void saveOperationPreset()}>
+              {isSavingPreset ? "Salvando..." : "Salvar"}
+            </SE.OperationSaveButton>
+            <SE.OperationDeleteButton type="button" disabled={isSavingPreset} onClick={() => {
+              setIsPresetNameWindowVisible(false);
+              setPresetName("");
+            }}>
+              Cancelar
+            </SE.OperationDeleteButton>
+          </SE.OperationActions>
+        </SE.PresetNameBody>
       </Window>
       <SE.Container>
         <SE.LeftPanel>
@@ -2057,7 +2726,10 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
                 responsesRef={responsesByElementRef}
                 onElementPointerDown={startPixiElementTransform}
                 onTransformPointerDown={startPixiTransform}
+                onRigElementPointerDown={handleRigElementPointerDown}
+                onRigAnchorPointerDown={startRigAnchorDrag}
                 isSelectionToolActive={activeTool === "select"}
+                isRigToolActive={activeTool === "rig"}
                 selectedElementIds={selectedElementIds}
                 selectedElementId={selectedElementId}
                 smartGuides={smartGuides}
@@ -2095,7 +2767,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               aria-label="Selecionar e transformar elementos"
               aria-pressed={activeTool === "select"}
               $active={activeTool === "select"}
-              onClick={() => setActiveTool("select")}
+              onClick={() => { setRigDraft(undefined); setActiveTool("select"); }}
             >
               {Icons.selectIcon}
             </SE.ToolButton>
@@ -2105,9 +2777,20 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
               aria-label="Mover visualização"
               aria-pressed={activeTool === "hand"}
               $active={activeTool === "hand"}
-              onClick={() => setActiveTool("hand")}
+              onClick={() => { setRigDraft(undefined); setActiveTool("hand"); }}
             >
               {Icons.handIcon}
+            </SE.ToolButton>
+            <SE.ToolButton
+              type="button"
+              data-tool="rig"
+              aria-label={rigDraft ? "Selecione o componente filho do rig" : "Criar vínculo de rig (R)"}
+              title={rigDraft ? "Agora clique no filho" : "Rig: pai → filho (R)"}
+              aria-pressed={activeTool === "rig"}
+              $active={activeTool === "rig"}
+              onClick={() => { setRigDraft(undefined); setActiveTool("rig"); }}
+            >
+              {Icons.rigIcon}
             </SE.ToolButton>
             <SE.ToolButton
               type="button"

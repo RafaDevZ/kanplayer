@@ -7,7 +7,6 @@ import {
   getElementPivotWorld,
   getRenderedElementGeometry,
   getTransformControls,
-  hasElementResponse as hasResponse,
   hitTestTransformControl,
   pointHitsElement,
   pointHitsTransformBox,
@@ -15,6 +14,7 @@ import {
   type ElementResponse,
   type ScenarioTransformControlMode,
 } from "./scenarioGeometry";
+import { getRigAnchorWorld, getRigResponsiveElementIds } from "./scenarioRig";
 
 interface PixiScenarioRendererProps {
   width: number;
@@ -24,7 +24,10 @@ interface PixiScenarioRendererProps {
   responsesRef: RefObject<Map<string, ElementResponse>>;
   onElementPointerDown: (event: PointerEvent, elementId: string) => void;
   onTransformPointerDown: (event: PointerEvent, mode: PixiTransformMode, elementId: string) => void;
+  onRigElementPointerDown: (event: PointerEvent, elementId: string, point: { x: number; y: number }) => void;
+  onRigAnchorPointerDown: (event: PointerEvent, childId: string, role: RigAnchorRole) => void;
   isSelectionToolActive: boolean;
+  isRigToolActive: boolean;
   selectedElementIds: string[];
   selectedElementId?: string;
   smartGuides: { vertical?: number; horizontal?: number };
@@ -34,6 +37,7 @@ interface PixiScenarioRendererProps {
 }
 
 export type PixiTransformMode = ScenarioTransformControlMode;
+export type RigAnchorRole = "parent" | "child";
 
 export interface PixiScenarioRendererHandle {
   render: () => void;
@@ -73,6 +77,8 @@ const drawCircle = (graphic: Graphics, width: number, height: number, color: str
   graphic.circle(width / 2, height * 0.15, highlightSize / 2).fill("#ffffff");
 };
 
+const scenarioCornerRadius = 10;
+
 const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenarioRendererProps>(function PixiScenarioRenderer({
   width,
   height,
@@ -81,7 +87,10 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
   responsesRef,
   onElementPointerDown,
   onTransformPointerDown,
+  onRigElementPointerDown,
+  onRigAnchorPointerDown,
   isSelectionToolActive,
+  isRigToolActive,
   selectedElementIds,
   selectedElementId,
   smartGuides,
@@ -89,10 +98,10 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
   zoom,
   view,
 }, ref) {
-  const responsiveElements = useMemo(() => elements.filter(hasResponse), [elements]);
-  const responsiveElementIds = useMemo(
-    () => new Set(responsiveElements.map((element) => element.id)),
-    [responsiveElements],
+  const responsiveElementIds = useMemo(() => getRigResponsiveElementIds(elements), [elements]);
+  const responsiveElements = useMemo(
+    () => elements.filter((element) => responsiveElementIds.has(element.id)),
+    [elements, responsiveElementIds],
   );
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
@@ -107,6 +116,8 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
   const responsiveElementIdsRef = useRef(responsiveElementIds);
   const onElementPointerDownRef = useRef(onElementPointerDown);
   const onTransformPointerDownRef = useRef(onTransformPointerDown);
+  const onRigElementPointerDownRef = useRef(onRigElementPointerDown);
+  const onRigAnchorPointerDownRef = useRef(onRigAnchorPointerDown);
   const overlayRef = useRef<Graphics | null>(null);
   const sceneLayerRef = useRef<Container | null>(null);
   const sceneContentLayerRef = useRef<Container | null>(null);
@@ -132,6 +143,8 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
   responsiveElementIdsRef.current = responsiveElementIds;
   onElementPointerDownRef.current = onElementPointerDown;
   onTransformPointerDownRef.current = onTransformPointerDown;
+  onRigElementPointerDownRef.current = onRigElementPointerDown;
+  onRigAnchorPointerDownRef.current = onRigAnchorPointerDown;
   overlayPropsRef.current = {
     elements,
     selectedElementIds,
@@ -179,8 +192,8 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
       const sceneLayer = new Container();
       const sceneContentLayer = new Container();
       sceneContentLayer.sortableChildren = true;
-      const sceneBackground = new Graphics().rect(0, 0, width, height).fill(backgroundColor).stroke({ color: "#ffffff", width: 1 });
-      const sceneMask = new Graphics().rect(0, 0, width, height).fill("#ffffff");
+      const sceneBackground = new Graphics().roundRect(0, 0, width, height, scenarioCornerRadius).fill(backgroundColor).stroke({ color: "#ffffff", width: 1 });
+      const sceneMask = new Graphics().roundRect(0, 0, width, height, scenarioCornerRadius).fill("#ffffff");
       sceneContentLayer.mask = sceneMask;
       sceneLayer.addChild(sceneBackground);
       sceneLayer.addChild(sceneContentLayer);
@@ -227,7 +240,10 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
           );
         }
         const overlayNeedsAnimation = overlayPropsRef.current.selectedElementIds
-          .some((id) => responsiveElementIdsRef.current.has(id));
+          .some((id) => responsiveElementIdsRef.current.has(id))
+          || overlayPropsRef.current.elements.some((element) =>
+            Boolean(element.rigParentId) && responsiveElementIdsRef.current.has(element.id),
+          );
         if (overlayRef.current && overlayNeedsAnimation) {
           drawOverlay(overlayRef.current, overlayPropsRef.current, responsesRef.current);
         }
@@ -289,7 +305,16 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
       // the texture is ready prevents blank image components in Pixi.
       const entry: { texture?: Texture; loading?: Promise<void>; users: number } = { users: 1 };
       textureCache.set(source, entry);
-      entry.loading = Assets.load<Texture>(source)
+      // O loader do Assets não é consistente com data URLs em alguns webviews
+      // do Tauri. A imagem já foi validada antes de virar um componente, então
+      // usamos o elemento HTML como fallback e mantemos a mesma textura em cache.
+      const loadTexture = () => Assets.load<Texture>(source).catch(() => new Promise<Texture>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(Texture.from(image));
+        image.onerror = () => reject(new Error("Não foi possível carregar a imagem do componente."));
+        image.src = source;
+      }));
+      entry.loading = loadTexture()
         .then((texture) => {
           const current = textureCache.get(source);
           if (!current || current.users <= 0) {
@@ -307,7 +332,7 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
               applyTransform(
                 rendered,
                 element,
-                hasResponse(element) ? responsesRef.current.get(element.id) ?? defaultResponse : defaultResponse,
+                responsesRef.current.get(element.id) ?? defaultResponse,
                 overlayPropsRef.current.width,
                 overlayPropsRef.current.height,
               );
@@ -332,7 +357,10 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
 
     elements.forEach((element, index) => {
       let rendered = renderedElements.get(element.id);
-      const source = element.imagePreviewUrl ?? element.imageData;
+      // imageData é a fonte persistida e funciona depois de reabrir o cenário.
+      // Não priorize a blob URL transitória do preview, pois ela pode deixar de
+      // ser resolvida pelo WebGL/Tauri ainda durante a importação.
+      const source = element.imageData ?? element.imagePreviewUrl;
       if (!rendered) {
         rendered = { container: new Container() };
         rendered.container.sortableChildren = true;
@@ -377,9 +405,7 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
         || rendered.scenarioWidth !== width
         || rendered.scenarioHeight !== height
       ) {
-        const response = hasResponse(element)
-          ? responsesRef.current.get(element.id) ?? defaultResponse
-          : defaultResponse;
+        const response = responsesRef.current.get(element.id) ?? defaultResponse;
         applyTransform(rendered, element, response, width, height);
         rendered.element = element;
         rendered.scenarioWidth = width;
@@ -389,18 +415,14 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
         rendered.container.visible = element.visible;
         rendered.visible = element.visible;
       }
-      if (rendered.opacity !== element.opacity) {
-        rendered.container.alpha = element.opacity;
-        rendered.opacity = element.opacity;
-      }
       if (rendered.layerIndex !== index) {
         rendered.container.zIndex = Math.max(1, elements.length - index);
         rendered.layerIndex = index;
       }
     });
     app.stage.sortChildren();
-    sceneMaskRef.current?.clear().rect(0, 0, width, height).fill("#ffffff");
-    sceneBackgroundRef.current?.clear().rect(0, 0, width, height).fill(backgroundColor).stroke({ color: "#ffffff", width: 1 });
+    sceneMaskRef.current?.clear().roundRect(0, 0, width, height, scenarioCornerRadius).fill("#ffffff");
+    sceneBackgroundRef.current?.clear().roundRect(0, 0, width, height, scenarioCornerRadius).fill(backgroundColor).stroke({ color: "#ffffff", width: 1 });
     if (overlayRef.current) drawOverlay(overlayRef.current, overlayPropsRef.current, responsesRef.current);
     app.render();
   }, [elements, responsesRef, isReady, width, height, backgroundColor]);
@@ -421,7 +443,7 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
   }, [isReady, view, zoom]);
 
   const handleCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isSelectionToolActive || event.button !== 0 || event.ctrlKey) return;
+    if ((!isSelectionToolActive && !isRigToolActive) || event.button !== 0 || event.ctrlKey) return;
     const host = hostRef.current;
     if (!host) return;
     const bounds = host.getBoundingClientRect();
@@ -430,13 +452,54 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
       x: (event.clientX - bounds.left - view.x) / zoom,
       y: (event.clientY - bounds.top - view.y) / zoom,
     };
-    const selectedElement = latestElementsRef.current.find((element) =>
+    if (isSelectionToolActive) {
+      const selectedIds = new Set(overlayPropsRef.current.selectedElementIds);
+      const elementsById = new Map(latestElementsRef.current.map((element) => [element.id, element]));
+      const anchorRadius = 9 / zoom;
+      let closestAnchor: { childId: string; role: RigAnchorRole; distance: number } | undefined;
+      for (const child of latestElementsRef.current) {
+        if (!child.visible || !child.rigParentId) continue;
+        const parent = elementsById.get(child.rigParentId);
+        if (!parent?.visible || (!selectedIds.has(parent.id) && !selectedIds.has(child.id))) continue;
+        const anchors: Array<{ role: RigAnchorRole; point: { x: number; y: number } }> = [
+          {
+            role: "parent",
+            point: getRigAnchorWorld(
+              parent,
+              responsesRef.current.get(parent.id) ?? defaultResponse,
+              child.rigParentAnchorX ?? 0.5,
+              child.rigParentAnchorY ?? 0.5,
+            ),
+          },
+          {
+            role: "child",
+            point: getRigAnchorWorld(
+              child,
+              responsesRef.current.get(child.id) ?? defaultResponse,
+              child.rigChildAnchorX ?? 0.5,
+              child.rigChildAnchorY ?? 0.5,
+            ),
+          },
+        ];
+        for (const anchor of anchors) {
+          const distance = Math.hypot(point.x - anchor.point.x, point.y - anchor.point.y);
+          if (distance <= anchorRadius && (!closestAnchor || distance < closestAnchor.distance)) {
+            closestAnchor = { childId: child.id, role: anchor.role, distance };
+          }
+        }
+      }
+      if (closestAnchor) {
+        event.preventDefault();
+        event.stopPropagation();
+        onRigAnchorPointerDownRef.current(event.nativeEvent, closestAnchor.childId, closestAnchor.role);
+        return;
+      }
+    }
+    const selectedElement = isSelectionToolActive ? latestElementsRef.current.find((element) =>
       element.id === overlayPropsRef.current.selectedElementId && element.visible,
-    );
+    ) : undefined;
     if (selectedElement) {
-      const response = hasResponse(selectedElement)
-        ? responsesRef.current.get(selectedElement.id) ?? defaultResponse
-        : defaultResponse;
+      const response = responsesRef.current.get(selectedElement.id) ?? defaultResponse;
       const control = hitTestTransformControl(point, selectedElement, response, zoom);
       if (control) {
         event.preventDefault();
@@ -450,21 +513,20 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
       const target = latestElementsRef.current.find((element) => pointHitsElement(
         point,
         element,
-        hasResponse(element) ? responsesRef.current.get(element.id) ?? defaultResponse : defaultResponse,
+        responsesRef.current.get(element.id) ?? defaultResponse,
       ));
       if (target) {
         event.preventDefault();
         event.stopPropagation();
-        onElementPointerDownRef.current(event.nativeEvent, target.id);
+        if (isRigToolActive) onRigElementPointerDownRef.current(event.nativeEvent, target.id, point);
+        else onElementPointerDownRef.current(event.nativeEvent, target.id);
         return;
       }
     }
     // When no actual component is under the pointer, the selected transform
     // rectangle remains draggable even beyond the clipped scenario boundary.
     if (selectedElement) {
-      const response = hasResponse(selectedElement)
-        ? responsesRef.current.get(selectedElement.id) ?? defaultResponse
-        : defaultResponse;
+      const response = responsesRef.current.get(selectedElement.id) ?? defaultResponse;
       if (pointHitsTransformBox(point, selectedElement, response, zoom)) {
         event.preventDefault();
         event.stopPropagation();
@@ -475,6 +537,10 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
 
   const handleCanvasPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const host = hostRef.current;
+    if (host && isRigToolActive) {
+      host.style.cursor = "crosshair";
+      return;
+    }
     const selectedElement = latestElementsRef.current.find((element) =>
       element.id === overlayPropsRef.current.selectedElementId && element.visible,
     );
@@ -484,9 +550,32 @@ const PixiScenarioRenderer = forwardRef<PixiScenarioRendererHandle, PixiScenario
       x: (event.clientX - bounds.left - view.x) / zoom,
       y: (event.clientY - bounds.top - view.y) / zoom,
     };
-    const response = hasResponse(selectedElement)
-      ? responsesRef.current.get(selectedElement.id) ?? defaultResponse
-      : defaultResponse;
+    const selectedIds = new Set(overlayPropsRef.current.selectedElementIds);
+    const elementsById = new Map(latestElementsRef.current.map((element) => [element.id, element]));
+    const anchorRadius = 9 / zoom;
+    for (const child of latestElementsRef.current) {
+      if (!child.visible || !child.rigParentId) continue;
+      const parent = elementsById.get(child.rigParentId);
+      if (!parent?.visible || (!selectedIds.has(parent.id) && !selectedIds.has(child.id))) continue;
+      const parentPoint = getRigAnchorWorld(
+        parent,
+        responsesRef.current.get(parent.id) ?? defaultResponse,
+        child.rigParentAnchorX ?? 0.5,
+        child.rigParentAnchorY ?? 0.5,
+      );
+      const childPoint = getRigAnchorWorld(
+        child,
+        responsesRef.current.get(child.id) ?? defaultResponse,
+        child.rigChildAnchorX ?? 0.5,
+        child.rigChildAnchorY ?? 0.5,
+      );
+      if (Math.hypot(point.x - parentPoint.x, point.y - parentPoint.y) <= anchorRadius
+        || Math.hypot(point.x - childPoint.x, point.y - childPoint.y) <= anchorRadius) {
+        host.style.cursor = "grab";
+        return;
+      }
+    }
+    const response = responsesRef.current.get(selectedElement.id) ?? defaultResponse;
     const control = hitTestTransformControl(point, selectedElement, response, zoom);
     host.style.cursor = control === "rotate" ? "crosshair" : control ? "move" : "";
   };
@@ -514,10 +603,28 @@ function applyTransform(
   const width = baseSize * element.scaleX;
   const height = baseSize * element.scaleY;
   const pivot = getElementPivotWorld(element);
-  rendered.container.position.set(pivot.x + response.translationX, pivot.y + response.translationY);
+  const radians = ((element.rotation + response.rotation) * Math.PI) / 180;
+  const centerX = (0.5 - element.pivotX) * width * response.scale;
+  const centerY = (0.5 - element.pivotY) * height * response.scale;
+  const compensatedX = centerX * (1 - response.widthScale);
+  const compensatedY = centerY * (1 - response.heightScale);
+  const rotatedCompensationX = compensatedX * Math.cos(radians) - compensatedY * Math.sin(radians);
+  const rotatedCompensationY = compensatedX * Math.sin(radians) + compensatedY * Math.cos(radians);
+  rendered.container.position.set(
+    pivot.x + response.translationX + rotatedCompensationX,
+    pivot.y + response.translationY + rotatedCompensationY,
+  );
   rendered.container.pivot.set(element.pivotX * width, element.pivotY * height);
-  rendered.container.scale.set(response.scale);
-  rendered.container.rotation = ((element.rotation + response.rotation) * Math.PI) / 180;
+  rendered.container.scale.set(
+    response.scale * response.widthScale,
+    response.scale * response.heightScale,
+  );
+  rendered.container.rotation = radians;
+  const renderedOpacity = Math.max(0, Math.min(1, element.opacity + response.opacity));
+  if (rendered.opacity !== renderedOpacity) {
+    rendered.container.alpha = renderedOpacity;
+    rendered.opacity = renderedOpacity;
+  }
   rendered.container.renderable = elementIntersectsScenario(element, response, scenarioWidth, scenarioHeight);
   if (rendered.sprite) {
     rendered.sprite.width = width;
@@ -556,6 +663,38 @@ const drawDashedLine = (
   }
 };
 
+const drawDashedCircle = (
+  graphic: Graphics,
+  center: { x: number; y: number },
+  radius: number,
+  color: string,
+  lineWidth: number,
+  dash: number,
+) => {
+  if (radius <= 0) return;
+  const dashAngle = Math.min(Math.PI / 4, dash / radius);
+  for (let start = 0; start < Math.PI * 2; start += dashAngle * 2) {
+    graphic
+      .arc(center.x, center.y, radius, start, Math.min(Math.PI * 2, start + dashAngle))
+      .stroke({ color, width: lineWidth, alpha: 0.9 });
+  }
+};
+
+const getWanderRadii = (element: ScenarioElementProps) => {
+  const radii = [
+    ...element.operations
+      .filter((operation) => operation.operation === "wander")
+      .map((operation) => operation.wanderRadius ?? 20),
+    ...(element.frequencyResponse?.operation === "wander"
+      ? [element.frequencyResponse.wanderRadius ?? 20]
+      : []),
+    ...(element.vocalResponse?.operation === "wander"
+      ? [element.vocalResponse.wanderRadius ?? 20]
+      : []),
+  ];
+  return [...new Set(radii.filter((radius) => Number.isFinite(radius) && radius > 0))];
+};
+
 const drawDiamond = (graphic: Graphics, x: number, y: number, size: number) => {
   graphic
     .moveTo(x, y - size / 2)
@@ -565,6 +704,16 @@ const drawDiamond = (graphic: Graphics, x: number, y: number, size: number) => {
     .closePath()
     .fill("#a855f7")
     .stroke({ color: "#ffffff", width: size / 8 });
+};
+
+const drawRigChildTriangle = (graphic: Graphics, x: number, y: number, size: number, lineWidth: number) => {
+  graphic
+    .moveTo(x, y - size * 0.6)
+    .lineTo(x + size * 0.6, y + size * 0.5)
+    .lineTo(x - size * 0.6, y + size * 0.5)
+    .closePath()
+    .fill("#00a8ff")
+    .stroke({ color: "#ffffff", width: lineWidth });
 };
 
 function drawOverlay(graphic: Graphics, props: OverlayProps, responses: Map<string, ElementResponse>) {
@@ -589,9 +738,36 @@ function drawOverlay(graphic: Graphics, props: OverlayProps, responses: Map<stri
   }
 
   const selectedSet = new Set(props.selectedElementIds);
+  const elementsById = new Map(props.elements.map((element) => [element.id, element]));
+  for (const child of props.elements) {
+    if (!child.visible || !child.rigParentId) continue;
+    const parent = elementsById.get(child.rigParentId);
+    if (!parent?.visible || (!selectedSet.has(parent.id) && !selectedSet.has(child.id))) continue;
+    const parentPoint = getRigAnchorWorld(
+      parent,
+      responses.get(parent.id) ?? defaultResponse,
+      child.rigParentAnchorX ?? 0.5,
+      child.rigParentAnchorY ?? 0.5,
+    );
+    const childPoint = getRigAnchorWorld(
+      child,
+      responses.get(child.id) ?? defaultResponse,
+      child.rigChildAnchorX ?? 0.5,
+      child.rigChildAnchorY ?? 0.5,
+    );
+    drawDashedLine(graphic, parentPoint, childPoint, "#a855f7", 1.5 * pixel, 5 / props.zoom);
+    // Círculo = ponto do pai; triângulo = ponto do filho.
+    graphic.circle(parentPoint.x, parentPoint.y, 4 / props.zoom)
+      .fill("#a855f7").stroke({ color: "#ffffff", width: pixel });
+    drawRigChildTriangle(graphic, childPoint.x, childPoint.y, 8 / props.zoom, pixel);
+  }
+
   for (const element of props.elements) {
     if (!element.visible || !selectedSet.has(element.id)) continue;
-    const response = hasResponse(element) ? responses.get(element.id) ?? defaultResponse : defaultResponse;
+    const response = responses.get(element.id) ?? defaultResponse;
+    for (const radius of getWanderRadii(element)) {
+      drawDashedCircle(graphic, { x: element.x, y: element.y }, radius, "#a855f7", pixel, 4 / props.zoom);
+    }
     const { width, height, localToWorld } = getRenderedElementGeometry(element, response);
     const isPrimary = element.id === props.selectedElementId;
     const inset = 10 / props.zoom;
