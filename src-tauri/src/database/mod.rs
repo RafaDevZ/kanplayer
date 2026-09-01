@@ -2,6 +2,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
+use crate::models::{normalize_scenario_operations, LegacyScenarioOperation};
 
 const DATABASE_FILE_NAME: &str = "kanplayer.sqlite3";
 
@@ -294,13 +295,9 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
             .map_err(|error| format!("Não foi possível atualizar a cor dos elementos do cenário: {error}"))?;
     }
 
-            if !columns.iter().any(|column| column == "operations_json") {
+    if !columns.iter().any(|column| column == "operations_json") {
         connection.execute("ALTER TABLE scenario_elements ADD COLUMN operations_json TEXT NOT NULL DEFAULT '[]'", [])
             .map_err(|error| format!("Não foi possível atualizar as operações dos elementos do cenário: {error}"))?;
-        connection.execute(
-            "UPDATE scenario_elements SET operations_json = json_array(json_object('id', id || '-legacy-operation', 'stemId', linked_stem_id, 'operation', stem_response_operation, 'value', stem_response_value, 'attackSeconds', stem_response_attack_seconds, 'releaseSeconds', stem_response_release_seconds)) WHERE stem_response_operation IS NOT NULL",
-            [],
-        ).map_err(|error| format!("Não foi possível migrar as operações dos elementos do cenário: {error}"))?;
     }
 
     if !columns.iter().any(|column| column == "frequency_response_json") {
@@ -332,6 +329,39 @@ fn ensure_scenario_element_columns(connection: &Connection) -> Result<(), String
             .map_err(|error| format!("Não foi possível migrar a liberação dos elementos do cenário: {error}"))?;
     }
 
+    migrate_scenario_operations(connection)?;
+
+    Ok(())
+}
+
+fn migrate_scenario_operations(connection: &Connection) -> Result<(), String> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT id, operations_json, linked_stem_id, stem_response_operation, stem_response_value, stem_response_attack_seconds, stem_response_release_seconds FROM scenario_elements",
+        ).map_err(|error| format!("Não foi possível ler as operações dos elementos: {error}"))?;
+        let rows = statement.query_map([], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?, row.get::<_, Option<f64>>(4)?,
+            row.get::<_, Option<f64>>(5)?, row.get::<_, Option<f64>>(6)?,
+        ))).map_err(|error| format!("Não foi possível ler as operações dos elementos: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Não foi possível ler as operações dos elementos: {error}"))?;
+        rows
+    };
+
+    for (id, raw, stem_id, operation, value, attack_seconds, release_seconds) in rows {
+        let normalized = normalize_scenario_operations(&raw, &id, LegacyScenarioOperation {
+            stem_id, operation: operation.as_deref(), value, attack_seconds, release_seconds,
+        });
+        let normalized_json = serde_json::to_string(&normalized)
+            .map_err(|error| format!("Não foi possível converter as operações do elemento: {error}"))?;
+        if normalized_json != raw || operation.is_some() {
+            connection.execute(
+                "UPDATE scenario_elements SET operations_json = ?1, stem_response_operation = NULL, stem_response_value = NULL, stem_response_attack_seconds = NULL, stem_response_release_seconds = NULL WHERE id = ?2",
+                params![normalized_json, id],
+            ).map_err(|error| format!("Não foi possível migrar as operações do elemento: {error}"))?;
+        }
+    }
     Ok(())
 }
 

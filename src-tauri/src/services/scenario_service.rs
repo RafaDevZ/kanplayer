@@ -1,6 +1,6 @@
 use crate::{
     database::Database,
-    models::{Scenario, ScenarioElement, ScenarioElementInput, ScenarioInput},
+    models::{normalize_scenario_operations, LegacyScenarioOperation, Scenario, ScenarioElement, ScenarioElementInput, ScenarioInput},
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 
@@ -67,7 +67,16 @@ fn get_by_id(connection: &rusqlite::Connection, scenario_id: i64) -> Result<Scen
 fn replace_elements(transaction: &Transaction, scenario_id: i64, elements: &[ScenarioElementInput]) -> Result<(), String> {
     transaction.execute("DELETE FROM scenario_elements WHERE scenario_id = ?1", [scenario_id]).map_err(database_error)?;
     for element in elements {
-        let operations_json = serde_json::to_string(&element.operations)
+        let raw_operations = serde_json::to_string(&element.operations)
+            .map_err(|error| format!("Não foi possível salvar as operações do elemento: {error}"))?;
+        let operations = normalize_scenario_operations(&raw_operations, element.id.trim(), LegacyScenarioOperation {
+            stem_id: element.linked_stem_id,
+            operation: element.stem_response_operation.as_deref(),
+            value: element.stem_response_value,
+            attack_seconds: element.stem_response_attack_seconds,
+            release_seconds: element.stem_response_release_seconds,
+        });
+        let operations_json = serde_json::to_string(&operations)
             .map_err(|error| format!("Não foi possível salvar as operações do elemento: {error}"))?;
         transaction.execute(
             "INSERT INTO scenario_elements (id, name, scenario_id, element_type, x, y, scale_x, scale_y, rotation, pivot_x, pivot_y, visible, opacity, color, image_data, image_width, image_height, operations_json, frequency_response_json, vocal_response_json, linked_timeline_id, linked_stem_id, stem_response_operation, stem_response_value, stem_response_attack_seconds, stem_response_release_seconds) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
@@ -86,8 +95,22 @@ fn list_elements(connection: &rusqlite::Connection, scenario_id: i64) -> Result<
 }
 
 fn read_scenario_element(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<ScenarioElement> {
+    let id = row.get::<_, String>(offset)?;
+    let operations_json = row.get::<_, String>(offset + 16)?;
+    let linked_stem_id = row.get::<_, Option<i64>>(offset + 20)?;
+    let stem_response_operation = row.get::<_, Option<String>>(offset + 21)?;
+    let stem_response_value = row.get::<_, Option<f64>>(offset + 22)?;
+    let stem_response_attack_seconds = row.get::<_, Option<f64>>(offset + 23)?;
+    let stem_response_release_seconds = row.get::<_, Option<f64>>(offset + 24)?;
+    let operations = normalize_scenario_operations(&operations_json, &id, LegacyScenarioOperation {
+        stem_id: linked_stem_id,
+        operation: stem_response_operation.as_deref(),
+        value: stem_response_value,
+        attack_seconds: stem_response_attack_seconds,
+        release_seconds: stem_response_release_seconds,
+    });
     Ok(ScenarioElement {
-        id: row.get(offset)?, name: row.get(offset + 1)?, element_type: row.get(offset + 2)?, x: row.get(offset + 3)?, y: row.get(offset + 4)?, scale_x: row.get(offset + 5)?, scale_y: row.get(offset + 6)?, rotation: row.get(offset + 7)?, pivot_x: row.get(offset + 8)?, pivot_y: row.get(offset + 9)?, visible: row.get(offset + 10)?, opacity: row.get(offset + 11)?, color: row.get(offset + 12)?, image_data: row.get(offset + 13)?, image_width: row.get(offset + 14)?, image_height: row.get(offset + 15)?, operations: serde_json::from_str(&row.get::<_, String>(offset + 16)?).unwrap_or_default(), frequency_response: row.get::<_, Option<String>>(offset + 17)?.and_then(|value| serde_json::from_str(&value).ok()), vocal_response: row.get::<_, Option<String>>(offset + 18)?.and_then(|value| serde_json::from_str(&value).ok()), linked_timeline_id: row.get(offset + 19)?, linked_stem_id: row.get(offset + 20)?, stem_response_operation: row.get(offset + 21)?, stem_response_value: row.get(offset + 22)?, stem_response_attack_seconds: row.get(offset + 23)?, stem_response_release_seconds: row.get(offset + 24)?,
+        id, name: row.get(offset + 1)?, element_type: row.get(offset + 2)?, x: row.get(offset + 3)?, y: row.get(offset + 4)?, scale_x: row.get(offset + 5)?, scale_y: row.get(offset + 6)?, rotation: row.get(offset + 7)?, pivot_x: row.get(offset + 8)?, pivot_y: row.get(offset + 9)?, visible: row.get(offset + 10)?, opacity: row.get(offset + 11)?, color: row.get(offset + 12)?, image_data: row.get(offset + 13)?, image_width: row.get(offset + 14)?, image_height: row.get(offset + 15)?, operations, frequency_response: row.get::<_, Option<String>>(offset + 17)?.and_then(|value| serde_json::from_str(&value).ok()), vocal_response: row.get::<_, Option<String>>(offset + 18)?.and_then(|value| serde_json::from_str(&value).ok()), linked_timeline_id: row.get(offset + 19)?, linked_stem_id, stem_response_operation, stem_response_value, stem_response_attack_seconds, stem_response_release_seconds,
     })
 }
 

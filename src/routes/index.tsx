@@ -1,9 +1,11 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import MusicEditor from "../pages/MusicEditor";
 import ScenarioEditor from "../pages/ScenarioEditor";
-import ScenarioEdit from "../pages/ScenarioEdit";
 import TimelineEdit from "../pages/TimelineEdit";
 import StemEditor from "../pages/StemEditor";
+
+const ScenarioEdit = lazy(() => import("../pages/ScenarioEdit"));
 
 function TimelineEditRoute() {
   const navigate = useNavigate();
@@ -19,10 +21,12 @@ function ScenarioEditRoute() {
   if (!Number.isInteger(parsedScenarioId) || parsedScenarioId <= 0)
     return <Navigate to="/scenarios" replace />;
   return (
-    <ScenarioEdit
-      scenarioId={parsedScenarioId}
-      onBack={() => navigate("/scenarios")}
-    />
+    <Suspense fallback={null}>
+      <ScenarioEdit
+        scenarioId={parsedScenarioId}
+        onBack={() => navigate("/scenarios")}
+      />
+    </Suspense>
   );
 }
 
