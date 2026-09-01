@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent, type RefCallback, type WheelEvent } from "react";
+import { memo, useEffect, useMemo, useReducer, useRef, useState, type PointerEvent, type RefCallback, type SetStateAction, type WheelEvent } from "react";
 import { Icons } from "../../components/Icons";
 import Dropdown from "../../components/Dropdown";
 import { DropdownOption } from "../../components/Dropdown/styles";
@@ -102,6 +102,71 @@ interface RigAnchorDrag {
   childId: string;
   role: RigAnchorRole;
 }
+
+interface ElementsHistoryState {
+  past: ScenarioElementProps[][];
+  present: ScenarioElementProps[];
+  future: ScenarioElementProps[][];
+  transactionStart?: ScenarioElementProps[];
+}
+
+type ElementsHistoryAction =
+  | { type: "set"; update: SetStateAction<ScenarioElementProps[]> }
+  | { type: "replace"; update: SetStateAction<ScenarioElementProps[]> }
+  | { type: "reset"; elements: ScenarioElementProps[] }
+  | { type: "begin" }
+  | { type: "end" }
+  | { type: "undo" }
+  | { type: "redo" };
+
+const historyLimit = 100;
+const appendHistory = (items: ScenarioElementProps[][], snapshot: ScenarioElementProps[]) =>
+  [...items, snapshot].slice(-historyLimit);
+
+const elementsHistoryReducer = (state: ElementsHistoryState, action: ElementsHistoryAction): ElementsHistoryState => {
+  if (action.type === "reset") return { past: [], present: action.elements, future: [] };
+  if (action.type === "begin") {
+    return state.transactionStart ? state : { ...state, transactionStart: state.present };
+  }
+  if (action.type === "end") {
+    if (!state.transactionStart) return state;
+    if (state.transactionStart === state.present) return { ...state, transactionStart: undefined };
+    return {
+      past: appendHistory(state.past, state.transactionStart),
+      present: state.present,
+      future: [],
+    };
+  }
+  if (action.type === "undo") {
+    const previous = state.past[state.past.length - 1];
+    if (!previous) return state;
+    return {
+      past: state.past.slice(0, -1),
+      present: previous,
+      future: [state.present, ...state.future].slice(0, historyLimit),
+    };
+  }
+  if (action.type === "redo") {
+    const next = state.future[0];
+    if (!next) return state;
+    return {
+      past: appendHistory(state.past, state.present),
+      present: next,
+      future: state.future.slice(1),
+    };
+  }
+  const next = typeof action.update === "function"
+    ? action.update(state.present)
+    : action.update;
+  if (next === state.present) return state;
+  if (action.type === "replace") return { ...state, present: next };
+  if (state.transactionStart) return { ...state, present: next };
+  return {
+    past: appendHistory(state.past, state.present),
+    present: next,
+    future: [],
+  };
+};
 
 const circleBaseSize = scenarioElementBaseSize;
 
@@ -480,7 +545,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const { data: timelines } = useTimelines();
   const { data: globalStems } = useStems();
   const { mutate: updateScenario, isPending: isSavingScenario } = useUpdateScenario(
-    (updatedScenario) => setElements(ensureElementNames(updatedScenario.elements)),
+    (updatedScenario) => replaceElements(ensureElementNames(updatedScenario.elements)),
   );
   const viewportRef = useRef<HTMLDivElement>(null);
   const pixiRendererRef = useRef<PixiScenarioRendererHandle>(null);
@@ -502,9 +567,27 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const [isZoomDropdownOpen, setIsZoomDropdownOpen] = useState(false);
   const [smartGuides, setSmartGuides] = useState<SmartGuideState>({});
   const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
-  const [elements, setElements] = useState<ScenarioElementProps[]>([]);
+  const [elementsHistory, dispatchElementsHistory] = useReducer(elementsHistoryReducer, {
+    past: [],
+    present: [],
+    future: [],
+  });
+  const elements = elementsHistory.present;
+  const setElements = (update: SetStateAction<ScenarioElementProps[]>) =>
+    dispatchElementsHistory({ type: "set", update });
+  const replaceElements = (update: SetStateAction<ScenarioElementProps[]>) =>
+    dispatchElementsHistory({ type: "replace", update });
+  const resetElementsHistory = (nextElements: ScenarioElementProps[]) =>
+    dispatchElementsHistory({ type: "reset", elements: nextElements });
+  const beginElementsHistoryTransaction = () => dispatchElementsHistory({ type: "begin" });
+  const endElementsHistoryTransaction = () => dispatchElementsHistory({ type: "end" });
+  const elementsRef = useRef(elements);
+  elementsRef.current = elements;
+  const selectedElementIdsRef = useRef<string[]>([]);
+  const componentClipboardRef = useRef<{ elements: ScenarioElementProps[]; pasteCount: number } | undefined>(undefined);
   const [selectedElementId, setSelectedElementId] = useState<string>();
   const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
+  selectedElementIdsRef.current = selectedElementIds;
   const [marqueeSelection, setMarqueeSelection] = useState<MarqueeSelection>();
   const [selectedTimelineId, setSelectedTimelineId] = useState<number>();
   const [isOperationWindowVisible, setIsOperationWindowVisible] = useState(false);
@@ -757,6 +840,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
   const startOpacityDrag = (event: PointerEvent<HTMLButtonElement>, element: ScenarioElementProps) => {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    beginElementsHistoryTransaction();
     opacityDragRef.current = { elementId: element.id, startY: event.clientY, startOpacity: element.opacity };
   };
 
@@ -789,6 +873,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     pendingOpacityYRef.current = undefined;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     opacityDragRef.current = undefined;
+    endElementsHistoryTransaction();
   };
   layerUiDelegateRef.current = {
     rename: updateElementName,
@@ -878,6 +963,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     event.stopPropagation();
     const viewport = viewportRef.current;
     if (!viewport) return;
+    beginElementsHistoryTransaction();
     rigAnchorDragRef.current = { pointerId: event.pointerId, childId, role };
     viewport.setPointerCapture(event.pointerId);
   };
@@ -1599,7 +1685,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     const loadedElements = ensureElementNames(scenario.elements);
     // A sequência persistida é a ordem das camadas e, portanto, a fonte do
     // z-index. Não ordenar por nome ao reabrir o cenário.
-    setElements([...loadedElements]);
+    resetElementsHistory([...loadedElements]);
     selectElement();
     setSelectedTimelineId(scenario.elements.find((element) => element.linkedTimelineId)?.linkedTimelineId);
     frequencySmoothedRef.current = {};
@@ -1608,7 +1694,18 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     responseValuesRef.current = [];
     responsesByElementRef.current.clear();
     layerDraggableRefsRef.current.clear();
+    componentClipboardRef.current = undefined;
   }, [scenario?.id]);
+
+  useEffect(() => {
+    const existingIds = new Set(elements.map((element) => element.id));
+    setSelectedElementIds((currentIds) => {
+      const nextIds = currentIds.filter((id) => existingIds.has(id));
+      if (nextIds.length === currentIds.length && nextIds.every((id, index) => id === currentIds[index])) return currentIds;
+      setSelectedElementId((currentId) => currentId && existingIds.has(currentId) ? currentId : nextIds[nextIds.length - 1]);
+      return nextIds;
+    });
+  }, [elements]);
 
   useEffect(() => {
     if (!scenario?.elements.length) return;
@@ -1628,7 +1725,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
       const normalized = recoverLegacyOperation(element);
       return [normalized.id, normalized];
     }));
-    setElements((currentElements) => currentElements.map((element) => {
+    replaceElements((currentElements) => currentElements.map((element) => {
       const persisted = persistedById.get(element.id);
       if (!persisted) return element;
       const localOperationIds = new Set(element.operations.map((operation) => operation.id));
@@ -2095,6 +2192,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     if (pendingPointerMoveRef.current?.pointerId === event.pointerId) flushPointerMove();
     if (rigAnchorDragRef.current?.pointerId === event.pointerId) {
       rigAnchorDragRef.current = undefined;
+      endElementsHistoryTransaction();
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -2110,6 +2208,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     }
     if (elementDragRef.current?.pointerId === event.pointerId) {
       elementDragRef.current = undefined;
+      endElementsHistoryTransaction();
       setSmartGuides({});
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
@@ -2137,6 +2236,7 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     const point = getScenarioPoint(event.clientX, event.clientY);
     const viewport = viewportRef.current;
     if (!point || !viewport) return;
+    beginElementsHistoryTransaction();
     let transformElement = event.altKey && mode === "move"
       ? {
           ...element,
@@ -2196,12 +2296,71 @@ export default function ScenarioEdit({ scenarioId, onBack }: ScenarioEditProps) 
     if (element) startElementTransform(event, mode, element);
   };
 
+  const copySelectedComponents = () => {
+    const selectedIds = new Set(selectedElementIdsRef.current);
+    if (selectedIds.size === 0) return;
+    const copiedElements = elementsRef.current
+      .filter((element) => selectedIds.has(element.id))
+      .map((element) => ({
+        ...element,
+        operations: element.operations.map((operation) => ({ ...operation })),
+        frequencyResponse: element.frequencyResponse ? { ...element.frequencyResponse } : undefined,
+        vocalResponse: element.vocalResponse ? { ...element.vocalResponse } : undefined,
+      }));
+    if (copiedElements.length > 0) componentClipboardRef.current = { elements: copiedElements, pasteCount: 0 };
+  };
+
+  const pasteCopiedComponents = () => {
+    const clipboard = componentClipboardRef.current;
+    if (!clipboard?.elements.length) return;
+    const pasteCount = clipboard.pasteCount + 1;
+    clipboard.pasteCount = pasteCount;
+    const idMap = new Map(clipboard.elements.map((element) => [element.id, crypto.randomUUID()]));
+    const offset = 20 * pasteCount;
+    const pastedElements = clipboard.elements.map((element) => ({
+      ...element,
+      id: idMap.get(element.id) ?? crypto.randomUUID(),
+      name: "",
+      x: element.x + offset,
+      y: element.y + offset,
+      rigParentId: element.rigParentId ? idMap.get(element.rigParentId) ?? element.rigParentId : undefined,
+      operations: element.operations.map((operation) => ({ ...operation, id: crypto.randomUUID() })),
+      frequencyResponse: element.frequencyResponse ? { ...element.frequencyResponse } : undefined,
+      vocalResponse: element.vocalResponse ? { ...element.vocalResponse } : undefined,
+    }));
+    setElements((currentElements) => ensureElementNames([...pastedElements, ...currentElements]));
+    const pastedIds = pastedElements.map((element) => element.id);
+    setSelectedElementIds(pastedIds);
+    setSelectedElementId(pastedIds[pastedIds.length - 1]);
+  };
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
       const key = event.key.toLowerCase();
-      if (key === "h") {
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && key === "c") {
+        copySelectedComponents();
+        event.preventDefault();
+      } else if (modifier && key === "v") {
+        pasteCopiedComponents();
+        event.preventDefault();
+      } else if (modifier && key === "z") {
+        dispatchElementsHistory({ type: event.shiftKey ? "redo" : "undo" });
+        responseValuesRef.current = [];
+        responsesByElementRef.current.clear();
+        frequencySmoothedRef.current = {};
+        vocalSmoothedRef.current = {};
+        event.preventDefault();
+      } else if (modifier && key === "y") {
+        dispatchElementsHistory({ type: "redo" });
+        responseValuesRef.current = [];
+        responsesByElementRef.current.clear();
+        frequencySmoothedRef.current = {};
+        vocalSmoothedRef.current = {};
+        event.preventDefault();
+      } else if (key === "h") {
         setRigDraft(undefined);
         setActiveTool("hand");
         event.preventDefault();
